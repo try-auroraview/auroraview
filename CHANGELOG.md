@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12](https://github.com/try-auroraview/auroraview/compare/auroraview-v0.5.11...auroraview-v0.5.12) (2026-10-04)
+
+
+### Bug Fixes
+
+* **ci:** pin vx python patch and align the pinned vx version across CI ([#492](https://github.com/try-auroraview/auroraview/issues/492)) ([7da726c](https://github.com/try-auroraview/auroraview/commit/7da726ca3b593808e707072a306cf314eda0346a))
+
 ## [0.5.11](https://github.com/loonghao/auroraview/compare/auroraview-v0.5.10...auroraview-v0.5.11) (2026-09-28)
 
 

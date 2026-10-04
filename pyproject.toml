@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "auroraview"
-version = "0.5.11" # x-release-please-version
+version = "0.5.12" # x-release-please-version
 description = "AuroraView: Rust-powered WebView for Python apps & DCC embedding"
 authors = [
     {name = "Hal Long", email = "hal.long@outlook.com"}
