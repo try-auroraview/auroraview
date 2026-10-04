@@ -524,7 +524,7 @@ Examples:
     python ai_cdp_integration.py --test-browser-use
 
 Connect with AI Tools:
-    - MCP: via dcc-mcp-core gateway (see loonghao/auroraview#364)
+    - MCP: via dcc-mcp-core gateway (see try-auroraview/auroraview#364)
     - browser-use: pip install browser-use
     - chrome-devtools MCP: npx @anthropic/mcp-chrome-devtools
 """,
@@ -570,7 +570,7 @@ def main():
     print()
     print("MCP:")
     print("  auroraview now plugs into dcc-mcp-core's gateway; see")
-    print("  https://github.com/loonghao/auroraview/issues/364 for wiring.")
+    print("  https://github.com/try-auroraview/auroraview/issues/364 for wiring.")
     print()
 
     ready_event = threading.Event()

@@ -4,13 +4,13 @@
 
 ## 行为准则
 
-参与本项目即表示你同意遵守我们的[行为准则](https://github.com/loonghao/auroraview/blob/main/CODE_OF_CONDUCT.md)。
+参与本项目即表示你同意遵守我们的[行为准则](https://github.com/try-auroraview/auroraview/blob/main/CODE_OF_CONDUCT.md)。
 
 ## 如何贡献
 
 ### 报告 Bug
 
-1. 在 [GitHub Issues](https://github.com/loonghao/auroraview/issues) 搜索是否已有相关问题
+1. 在 [GitHub Issues](https://github.com/try-auroraview/auroraview/issues) 搜索是否已有相关问题
 2. 如果没有，创建新 Issue，包含：
    - 清晰的标题和描述
    - 复现步骤
@@ -45,7 +45,7 @@
 ### 克隆仓库
 
 ```bash
-git clone https://github.com/loonghao/auroraview.git
+git clone https://github.com/try-auroraview/auroraview.git
 cd auroraview
 ```
 
@@ -324,7 +324,7 @@ auroraview/
 
 ## 获取帮助
 
-- [GitHub Discussions](https://github.com/loonghao/auroraview/discussions) - 问题讨论
+- [GitHub Discussions](https://github.com/try-auroraview/auroraview/discussions) - 问题讨论
 - [Discord](https://discord.gg/auroraview) - 实时交流
 - [文档](https://auroraview.dev) - 官方文档
 
@@ -332,6 +332,6 @@ auroraview/
 
 感谢所有贡献者！
 
-<a href="https://github.com/loonghao/auroraview/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=loonghao/auroraview" />
+<a href="https://github.com/try-auroraview/auroraview/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=try-auroraview/auroraview" />
 </a>

@@ -1,11 +1,11 @@
 # AuroraView CLI Install Script for Windows PowerShell
-# Usage: irm https://raw.githubusercontent.com/loonghao/auroraview/main/scripts/install.ps1 | iex
-# Or: Invoke-WebRequest -Uri https://raw.githubusercontent.com/loonghao/auroraview/main/scripts/install.ps1 -UseBasicParsing | Invoke-Expression
+# Usage: irm https://raw.githubusercontent.com/try-auroraview/auroraview/main/scripts/install.ps1 | iex
+# Or: Invoke-WebRequest -Uri https://raw.githubusercontent.com/try-auroraview/auroraview/main/scripts/install.ps1 -UseBasicParsing | Invoke-Expression
 
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$Repo = "loonghao/auroraview"
+$Repo = "try-auroraview/auroraview"
 $BinaryName = "auroraview-cli"
 $InstallDir = if ($env:AURORAVIEW_INSTALL_DIR) { $env:AURORAVIEW_INSTALL_DIR } else { "$env:USERPROFILE\.auroraview\bin" }
 
@@ -152,7 +152,7 @@ function Main {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║           AuroraView CLI Installer                           ║" -ForegroundColor Cyan
-    Write-Host "║           https://github.com/loonghao/auroraview             ║" -ForegroundColor Cyan
+    Write-Host "║           https://github.com/try-auroraview/auroraview             ║" -ForegroundColor Cyan
     Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
     

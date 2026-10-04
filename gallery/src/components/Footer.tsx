@@ -11,7 +11,7 @@ export function Footer() {
         <div className="flex items-center gap-5">
           <span className="font-medium">AuroraView Gallery</span>
           <a
-            href="https://github.com/loonghao/auroraview"
+            href="https://github.com/try-auroraview/auroraview"
             target="_blank"
             rel="noopener noreferrer"
             className={cn(
@@ -23,7 +23,7 @@ export function Footer() {
             GitHub
           </a>
           <a
-            href="https://github.com/loonghao/auroraview/issues"
+            href="https://github.com/try-auroraview/auroraview/issues"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-primary transition-colors"

@@ -1,12 +1,12 @@
 #!/bin/bash
 # AuroraView CLI Install Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/loonghao/auroraview/main/scripts/install.sh | bash
-# Or: wget -qO- https://raw.githubusercontent.com/loonghao/auroraview/main/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/try-auroraview/auroraview/main/scripts/install.sh | bash
+# Or: wget -qO- https://raw.githubusercontent.com/try-auroraview/auroraview/main/scripts/install.sh | bash
 
 set -e
 
 # Configuration
-REPO="loonghao/auroraview"
+REPO="try-auroraview/auroraview"
 BINARY_NAME="auroraview-cli"
 INSTALL_DIR="${AURORAVIEW_INSTALL_DIR:-$HOME/.auroraview/bin}"
 
@@ -219,7 +219,7 @@ main() {
     echo ""
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║           AuroraView CLI Installer                           ║"
-    echo "║           https://github.com/loonghao/auroraview             ║"
+    echo "║           https://github.com/try-auroraview/auroraview             ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
     

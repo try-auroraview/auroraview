@@ -60,7 +60,7 @@ uvx auroraview --url https://example.com
 
 ```bash
 # 克隆仓库
-git clone https://github.com/loonghao/auroraview.git
+git clone https://github.com/try-auroraview/auroraview.git
 cd auroraview
 
 # 安装 Rust（如果尚未安装）

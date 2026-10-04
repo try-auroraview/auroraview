@@ -92,6 +92,6 @@ Every tool command goes through `vx`; task orchestration goes through
 
 ## References
 
-- Repository: https://github.com/loonghao/auroraview
+- Repository: https://github.com/try-auroraview/auroraview
 - PyPI: https://pypi.org/project/auroraview
 - `./CHANGELOG.md`, `./CONTRIBUTING.md`

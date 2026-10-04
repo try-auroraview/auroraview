@@ -14,7 +14,7 @@ hero:
       link: /zh/guide/getting-started
     - theme: alt
       text: GitHub
-      link: https://github.com/loonghao/auroraview
+      link: https://github.com/try-auroraview/auroraview
 
 features:
   - icon: 🚀

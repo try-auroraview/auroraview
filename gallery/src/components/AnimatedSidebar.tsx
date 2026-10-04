@@ -263,7 +263,7 @@ export function AnimatedSidebar({
   };
 
   const handleGitHubClick = () => {
-    onOpenLink('https://github.com/loonghao/auroraview', 'GitHub - AuroraView');
+    onOpenLink('https://github.com/try-auroraview/auroraview', 'GitHub - AuroraView');
   };
 
   let buttonIndex = 0;

@@ -24,7 +24,7 @@ impl ExtensionsPlugin {
                      As an alternative, extensions can: \
                      1) Use identity.launchWebAuthFlow for OAuth flows, or \
                      2) Implement custom authentication via fetch API. \
-                     Track progress at: https://github.com/loonghao/auroraview/issues"
+                     Track progress at: https://github.com/try-auroraview/auroraview/issues"
                 ))
             }
             "removeCachedAuthToken" => Ok(serde_json::json!({})),
@@ -39,7 +39,7 @@ impl ExtensionsPlugin {
                      This requires opening an external browser window for OAuth redirects. \
                      Workaround: extensions can open the auth URL in a new WebView window \
                      and intercept the redirect URL manually. \
-                     Track progress at: https://github.com/loonghao/auroraview/issues",
+                     Track progress at: https://github.com/try-auroraview/auroraview/issues",
                 ))
             }
             "getRedirectURL" => {

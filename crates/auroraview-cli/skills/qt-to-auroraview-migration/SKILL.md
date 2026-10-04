@@ -204,7 +204,7 @@ Agents see tools exposed through `dcc-mcp-core`'s progressive discovery —
 | `auroraview-diagnostics`  | `list_windows`, `cdp_health`, `dump_console` (implicit-invocation on)     |
 | `auroraview-devtools`     | `evaluate_js`, `reload`, `capture_screenshot` (explicit `load_skill`)     |
 
-See [Epic #364](https://github.com/loonghao/auroraview/issues/364) for the
+See [Epic #364](https://github.com/try-auroraview/auroraview/issues/364) for the
 rollout status — the Rust adapter crate (`crates/auroraview-mcp`) and the
 skills listed above are tracked under issues #365–#368.
 

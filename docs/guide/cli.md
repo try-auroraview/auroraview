@@ -28,7 +28,7 @@ auroraview --url https://example.com --title "My App" --width 1024 --height 768
 
 ### Rust CLI (for packaging)
 
-Download from [GitHub Releases](https://github.com/loonghao/auroraview/releases) or build from source:
+Download from [GitHub Releases](https://github.com/try-auroraview/auroraview/releases) or build from source:
 
 ```bash
 # Build from source

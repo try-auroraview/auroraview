@@ -44,7 +44,7 @@ struct Asset {
     size: u64,
 }
 
-const GITHUB_REPO: &str = "loonghao/auroraview";
+const GITHUB_REPO: &str = "try-auroraview/auroraview";
 const BINARY_NAME: &str = "auroraview-cli";
 
 /// Run the self-update command

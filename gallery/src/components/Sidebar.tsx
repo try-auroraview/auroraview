@@ -26,7 +26,7 @@ export function Sidebar({ activeCategory, onCategoryClick, onSettingsClick, onOp
   const samplesByCategory = getSamplesByCategory();
 
   const handleGitHubClick = () => {
-    onOpenLink('https://github.com/loonghao/auroraview', 'GitHub - AuroraView');
+    onOpenLink('https://github.com/try-auroraview/auroraview', 'GitHub - AuroraView');
   };
 
   return (
