@@ -58,6 +58,7 @@ use serde_json::Value;
 /// Request structure for api_call command
 #[derive(serde::Deserialize)]
 pub struct ApiCallRequest {
+    #[serde(alias = "extensionId")]
     pub extension_id: String,
     pub api: String,
     pub method: String,
@@ -67,33 +68,42 @@ pub struct ApiCallRequest {
 /// Request structure for extension ID-based commands
 #[derive(serde::Deserialize)]
 pub struct ExtensionIdRequest {
+    #[serde(alias = "extensionId")]
     pub extension_id: String,
 }
 
 /// Request structure for view ID-based commands
 #[derive(serde::Deserialize)]
 pub struct ViewIdRequest {
+    #[serde(alias = "viewId")]
     pub view_id: String,
 }
 
 /// Request structure for create_view command
 #[derive(serde::Deserialize)]
 pub struct CreateViewRequest {
+    #[serde(alias = "extensionId")]
     pub extension_id: String,
+    #[serde(alias = "viewType")]
     pub view_type: ViewTypeRequest,
+    #[serde(alias = "htmlPath")]
     pub html_path: Option<String>,
     pub title: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    #[serde(alias = "devTools")]
     pub dev_tools: Option<bool>,
+    #[serde(alias = "debugPort")]
     pub debug_port: Option<u16>,
     pub visible: Option<bool>,
+    #[serde(alias = "parentHwnd")]
     pub parent_hwnd: Option<u64>,
 }
 
 /// Request structure for dispatch_event command
 #[derive(serde::Deserialize)]
 pub struct EventDispatchRequest {
+    #[serde(alias = "extensionId")]
     pub extension_id: String,
     pub api: String,
     pub event: String,
