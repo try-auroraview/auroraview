@@ -18,6 +18,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 set shell := ["sh", "-c"]
 
 windows_rust_target := "x86_64-pc-windows-msvc"
+rust_msrv := "1.95.0"
 
 # Default recipe to display help
 default:
@@ -618,6 +619,12 @@ ci-docs-rust: ci-assets-build
     $env:RUSTDOCFLAGS = "-D warnings"; vx cargo doc --no-deps --document-private-items
     @echo "[OK] Rust documentation checks completed"
 
+# Documentation checks using the MSRV system toolchain installed by CI.
+[unix]
+ci-docs-rust-msrv: ci-assets-build
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo test --doc
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" RUSTDOCFLAGS="-D warnings" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo doc --no-deps --document-private-items
+
 [unix]
 ci-cli-build TARGET:
     @echo "Building CLI for target {{TARGET}}..."
@@ -673,6 +680,13 @@ ci-rust-coverage-lcov: llvm-cov-install nextest-install
     vx cargo llvm-cov nextest --no-report --features "test-helpers" --config-file .config/nextest.toml --profile ci --tests
     vx cargo llvm-cov report --lcov --output-path rust-coverage.lcov
     @echo "[OK] Rust coverage report: rust-coverage.lcov"
+
+# Coverage using the MSRV system toolchain and its bundled LLVM tools.
+# The PR job installs the toolchain, cargo-llvm-cov and cargo-nextest.
+[unix]
+ci-rust-coverage-lcov-msrv:
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo llvm-cov nextest --no-report --features "test-helpers" --config-file .config/nextest.toml --profile ci --tests
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo llvm-cov report --lcov --output-path rust-coverage.lcov
 
 [windows]
 ci-rust-coverage-lcov:

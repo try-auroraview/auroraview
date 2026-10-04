@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.90+-orange.svg" alt="Rust"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95+-orange.svg" alt="Rust"></a>
   <a href="https://github.com/try-auroraview/auroraview"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform"></a>
   <a href="https://github.com/try-auroraview/auroraview/actions/workflows/ci.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/try-auroraview/auroraview/actions/workflows/build-wheels.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/build-wheels.yml/badge.svg?branch=main" alt="Build Wheels"></a>
@@ -115,7 +115,9 @@ server.stop()
 </p>
 ##  Technical Framework
 
-- Core stack: Rust 1.90+, PyO3 0.27 (abi3), Wry 0.54, Tao 0.34
+- Core stack: Rust 1.95+, PyO3 0.27 (abi3), Wry 0.54, Tao 0.34
+
+Rust 1.95 is the minimum toolchain for this workspace. Its locked `dcc-mcp-protocols` 0.15 dependency participates in workspace checks, tests, and benchmarks. The minimum-version CI check uses Rust 1.95 and the committed dependency lock. Strict Clippy uses 1.98 because `async-trait` 0.1.89 triggers a macro-generated `double_must_use` diagnostic on Clippy 1.99; this toolchain exception does not change the minimum build version.
 - Web engines: Windows (WebView2), macOS (WKWebView), Linux (WebKitGTK)
 - Packaging: maturin wheels; CPython 3.8+ uses abi3 per platform, CPython 3.7 uses dedicated cp37 wheels on Linux/Windows and source builds on macOS
 - Event loop: blocking show() by default; nonblocking mode planned for host loops

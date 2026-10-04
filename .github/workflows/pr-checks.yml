@@ -322,7 +322,7 @@ jobs:
           df -h
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt,clippy
 
@@ -378,7 +378,7 @@ jobs:
 
       - name: Cargo check (fast compile check)
         if: needs.path-filter.outputs.needs_rust_checks == 'true'
-        run: cargo check --workspace --all-features
+        run: cargo check --workspace --all-targets --all-features --locked
 
   # =============================================================================
   # Clippy - Rust linting (parallel with quick-checks)
@@ -525,7 +525,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           python-version: '3.7'
-          rust-version: '1.90.0'
+          rust-version: '1.95.0'
           maturin-args: ${{ matrix.maturin-args }}
           test-wheel: 'true'
           artifact-name: ${{ matrix.artifact-name }}
@@ -609,7 +609,7 @@ jobs:
           df -h
 
       - name: Setup Rust with llvm-tools
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: llvm-tools-preview
 
@@ -631,65 +631,33 @@ jobs:
           tools: 'just bun'
           cache: 'false'
 
-      - name: Install llvm-tools-preview (vx managed Rust)
-        run: vx rustup component add llvm-tools-preview
-
-      - name: Fix llvm-tools in vx toolchain
-        if: runner.os == 'Linux'
+      - name: Verify MSRV Rust and bundled LLVM tools
         run: |
-          # vx installs its own Rust sysroot (~/.vx/store/rust/...) that does not ship the
-          # llvm-tools-preview binaries: `vx rustup component add llvm-tools-preview` reports
-          # "component llvm-tools is up to date" while <sysroot>/lib/rustlib/<host>/bin stays
-          # empty. cargo-llvm-cov needs llvm-profdata (merge) and llvm-cov (export/report) from
-          # that directory, so link every llvm tool the vx sysroot is missing from the
-          # runner-provided toolchain (dtolnay/rust-toolchain with llvm-tools-preview).
           set -euo pipefail
+          # Use the runner toolchain installed above, including its LLVM binaries.
+          # The VX provider's private stable sysroot is a separate toolchain.
+          export RUSTUP_HOME="$HOME/.rustup"
+          export RUSTUP_TOOLCHAIN="1.95.0"
+          test -d "$RUSTUP_HOME"
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" >> "$GITHUB_ENV"
 
-          VX_SYSROOT="$(vx rustc --print sysroot)"
-          HOST_TRIPLE="$(vx rustc -vV | awk '/^host:/ {print $2}')"
-          VX_BIN="$VX_SYSROOT/lib/rustlib/$HOST_TRIPLE/bin"
-          SYS_RUSTC="$HOME/.cargo/bin/rustc"
-
-          if [ ! -x "$SYS_RUSTC" ]; then
-            echo "::error::system rustc not found at $SYS_RUSTC; cannot repair vx llvm-tools"
-            exit 1
-          fi
-
-          SYS_BIN="$("$SYS_RUSTC" --print sysroot)/lib/rustlib/$("$SYS_RUSTC" -vV | awk '/^host:/ {print $2}')/bin"
-          if [ ! -d "$SYS_BIN" ]; then
-            echo "::error::system llvm-tools directory not found at $SYS_BIN"
-            exit 1
-          fi
-
-          mkdir -p "$VX_BIN"
-          linked=0
-          while IFS= read -r -d '' tool; do
-            name="$(basename "$tool")"
-            if [ ! -e "$VX_BIN/$name" ]; then
-              ln -sf "$tool" "$VX_BIN/$name"
-              echo "Linked $name -> $tool"
-              linked=$((linked + 1))
-            fi
-          done < <(find "$SYS_BIN" -mindepth 1 -maxdepth 1 ! -type d -print0)
-          echo "Linked $linked llvm tool(s) into $VX_BIN"
-
-          # Fail here instead of later with an opaque "No such file or directory" from
-          # cargo-llvm-cov: a missing tool would otherwise surface only in the report step.
-          missing=0
+          MSRV_RUSTC="$(vx --use-system-path --inherit-env rustup run 1.95.0 rustc --version)"
+          case "$MSRV_RUSTC" in
+            "rustc 1.95.0 "*) echo "$MSRV_RUSTC" ;;
+            *) echo "::error::expected Rust 1.95.0, got $MSRV_RUSTC"; exit 1 ;;
+          esac
+          vx --use-system-path --inherit-env rustup run 1.95.0 rustc -vV
+          MSRV_SYSROOT="$(vx --use-system-path --inherit-env rustup run 1.95.0 rustc --print sysroot)"
+          MSRV_HOST="$(vx --use-system-path --inherit-env rustup run 1.95.0 rustc -vV | awk '/^host:/ {print $2}')"
+          MSRV_BIN="$MSRV_SYSROOT/lib/rustlib/$MSRV_HOST/bin"
           for tool in llvm-profdata llvm-cov; do
-            if [ -x "$VX_BIN/$tool" ]; then
-              echo "[OK] $tool available at $VX_BIN/$tool"
-            else
-              echo "::error::$tool still missing in vx sysroot ($VX_BIN/$tool)"
-              missing=1
+            if [ ! -x "$MSRV_BIN/$tool" ]; then
+              echo "::error::$tool missing from Rust 1.95.0 sysroot ($MSRV_BIN)"
+              exit 1
             fi
+            "$MSRV_BIN/$tool" --version
           done
-          if [ "$missing" -ne 0 ]; then
-            exit 1
-          fi
-          "$VX_BIN/llvm-cov" --version
-          "$VX_BIN/llvm-profdata" --version
-
       - name: Build frontend assets (required by auroraview-assets)
         run: vx just ci-assets-build
 
@@ -715,7 +683,7 @@ jobs:
           tool: nextest
 
       - name: Run tests with coverage
-        run: vx just ci-rust-coverage-lcov
+        run: vx just ci-rust-coverage-lcov-msrv
 
       - name: Verify Rust coverage report
         if: runner.os == 'Linux'
@@ -730,7 +698,7 @@ jobs:
           head -5 rust-coverage.lcov
 
       - name: Run doc tests
-        run: vx just ci-docs-rust
+        run: vx just ci-docs-rust-msrv
 
       - name: Upload nextest JUnit report
         if: always()

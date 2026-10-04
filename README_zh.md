@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.90+-orange.svg" alt="Rust"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95+-orange.svg" alt="Rust"></a>
   <a href="https://github.com/try-auroraview/auroraview"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="平台"></a>
   <a href="https://github.com/try-auroraview/auroraview/actions/workflows/ci.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/try-auroraview/auroraview/actions/workflows/build-wheels.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/build-wheels.yml/badge.svg?branch=main" alt="Build Wheels"></a>
@@ -94,7 +94,7 @@ AuroraView 为专业DCC应用程序（如Maya、3ds Max、Houdini、Blender、Ph
 </p>
 ##  技术框架
 
-- 核心栈：Rust 1.90+、PyO3 0.27（abi3）、Wry 0.54、Tao 0.34
+- 核心栈：Rust 1.95+、PyO3 0.27（abi3）、Wry 0.54、Tao 0.34
 - 引擎：Windows（WebView2）、macOS（WKWebView）、Linux（WebKitGTK）
 - 打包：maturin + abi3 → 单个 wheel 兼容 CPython 3.7-3.13
 - 事件循环：默认阻塞式 show()；后续提供非阻塞模式以适配宿主循环
