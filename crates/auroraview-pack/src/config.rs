@@ -792,7 +792,7 @@ impl PackConfig {
             .build
             .out_dir
             .as_ref()
-            .map(&resolve_path)
+            .map(resolve_path)
             .unwrap_or_else(|| base_dir.join("pack-output"));
 
         // Build PackConfig
