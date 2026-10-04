@@ -241,6 +241,7 @@ pub struct ContentScriptInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ApiCallRequest {
     /// Extension ID
+    #[serde(alias = "extension_id")]
     pub extension_id: String,
     /// API namespace (storage, tabs, etc.)
     pub api: String,
@@ -256,6 +257,7 @@ pub struct ApiCallRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionIdRequest {
     /// Extension ID
+    #[serde(alias = "extension_id")]
     pub extension_id: String,
 }
 
@@ -263,6 +265,7 @@ pub struct ExtensionIdRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventDispatchRequest {
+    #[serde(alias = "extension_id")]
     pub extension_id: String,
     pub api: String,
     pub event: String,
@@ -300,15 +303,21 @@ impl From<ViewTypeRequest> for auroraview_extensions::ExtensionViewType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateViewRequest {
+    #[serde(alias = "extension_id")]
     pub extension_id: String,
+    #[serde(alias = "view_type")]
     pub view_type: ViewTypeRequest,
+    #[serde(alias = "html_path")]
     pub html_path: String,
     pub title: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    #[serde(alias = "dev_tools")]
     pub dev_tools: Option<bool>,
+    #[serde(alias = "debug_port")]
     pub debug_port: Option<u16>,
     pub visible: Option<bool>,
+    #[serde(alias = "parent_hwnd")]
     pub parent_hwnd: Option<u64>,
 }
 
@@ -316,5 +325,6 @@ pub struct CreateViewRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewIdRequest {
+    #[serde(alias = "view_id")]
     pub view_id: String,
 }
