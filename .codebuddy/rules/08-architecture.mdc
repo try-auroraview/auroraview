@@ -33,7 +33,7 @@ submodules/
 
 1. **克隆项目**：使用 `--recurse-submodules` 确保 submodules 被正确初始化
    ```bash
-   git clone --recurse-submodules https://github.com/loonghao/auroraview.git
+   git clone --recurse-submodules https://github.com/try-auroraview/auroraview.git
    ```
 
 2. **更新 Submodules**：

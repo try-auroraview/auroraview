@@ -11,36 +11,36 @@
   <a href="https://pypi.org/project/auroraview/"><img src="https://img.shields.io/pypi/pyversions/auroraview.svg" alt="Python Versions"></a>
   <a href="https://pepy.tech/project/auroraview"><img src="https://static.pepy.tech/badge/auroraview" alt="Downloads"></a>
   <a href="https://codecov.io/gh/loonghao/auroraview"><img src="https://codecov.io/gh/loonghao/auroraview/branch/main/graph/badge.svg" alt="Codecov"></a>
-  <a href="https://github.com/loonghao/auroraview/actions/workflows/pr-checks.yml"><img src="https://github.com/loonghao/auroraview/actions/workflows/pr-checks.yml/badge.svg" alt="PR Checks"></a>
+  <a href="https://github.com/try-auroraview/auroraview/actions/workflows/pr-checks.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/pr-checks.yml/badge.svg" alt="PR Checks"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
 <p align="center">
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.90+-orange.svg" alt="Rust"></a>
-  <a href="https://github.com/loonghao/auroraview"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform"></a>
-  <a href="https://github.com/loonghao/auroraview/actions/workflows/ci.yml"><img src="https://github.com/loonghao/auroraview/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://github.com/loonghao/auroraview/actions/workflows/build-wheels.yml"><img src="https://github.com/loonghao/auroraview/actions/workflows/build-wheels.yml/badge.svg?branch=main" alt="Build Wheels"></a>
-  <a href="https://github.com/loonghao/auroraview/actions/workflows/release.yml"><img src="https://github.com/loonghao/auroraview/actions/workflows/release.yml/badge.svg?branch=main" alt="Release"></a>
+  <a href="https://github.com/try-auroraview/auroraview"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform"></a>
+  <a href="https://github.com/try-auroraview/auroraview/actions/workflows/ci.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/try-auroraview/auroraview/actions/workflows/build-wheels.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/build-wheels.yml/badge.svg?branch=main" alt="Build Wheels"></a>
+  <a href="https://github.com/try-auroraview/auroraview/actions/workflows/release.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/release.yml/badge.svg?branch=main" alt="Release"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/loonghao/auroraview/actions/workflows/codeql.yml"><img src="https://github.com/loonghao/auroraview/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL"></a>
-  <a href="https://github.com/loonghao/auroraview/actions/workflows/security-audit.yml"><img src="https://github.com/loonghao/auroraview/actions/workflows/security-audit.yml/badge.svg?branch=main" alt="Security Audit"></a>
-  <a href="https://github.com/loonghao/auroraview/releases"><img src="https://img.shields.io/github/v/release/loonghao/auroraview?display_name=tag" alt="Latest Release"></a>
+  <a href="https://github.com/try-auroraview/auroraview/actions/workflows/codeql.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL"></a>
+  <a href="https://github.com/try-auroraview/auroraview/actions/workflows/security-audit.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/security-audit.yml/badge.svg?branch=main" alt="Security Audit"></a>
+  <a href="https://github.com/try-auroraview/auroraview/releases"><img src="https://img.shields.io/github/v/release/try-auroraview/auroraview?display_name=tag" alt="Latest Release"></a>
   <a href="https://pre-commit.com/"><img src="https://img.shields.io/badge/pre--commit-enabled-brightgreen.svg" alt="pre-commit"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/loonghao/auroraview/stargazers"><img src="https://img.shields.io/github/stars/loonghao/auroraview?style=social" alt="GitHub Stars"></a>
-  <a href="https://github.com/loonghao/auroraview/releases"><img src="https://img.shields.io/github/downloads/loonghao/auroraview/total" alt="GitHub Downloads"></a>
-  <a href="https://github.com/loonghao/auroraview/commits/main"><img src="https://img.shields.io/github/last-commit/loonghao/auroraview" alt="Last Commit"></a>
-  <a href="https://github.com/loonghao/auroraview/graphs/commit-activity"><img src="https://img.shields.io/github/commit-activity/m/loonghao/auroraview" alt="Commit Activity"></a>
+  <a href="https://github.com/try-auroraview/auroraview/stargazers"><img src="https://img.shields.io/github/stars/try-auroraview/auroraview?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/try-auroraview/auroraview/releases"><img src="https://img.shields.io/github/downloads/try-auroraview/auroraview/total" alt="GitHub Downloads"></a>
+  <a href="https://github.com/try-auroraview/auroraview/commits/main"><img src="https://img.shields.io/github/last-commit/try-auroraview/auroraview" alt="Last Commit"></a>
+  <a href="https://github.com/try-auroraview/auroraview/graphs/commit-activity"><img src="https://img.shields.io/github/commit-activity/m/try-auroraview/auroraview" alt="Commit Activity"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/loonghao/auroraview/issues"><img src="https://img.shields.io/github/issues/loonghao/auroraview" alt="Open Issues"></a>
-  <a href="https://github.com/loonghao/auroraview/pulls"><img src="https://img.shields.io/github/issues-pr/loonghao/auroraview" alt="Open PRs"></a>
-  <a href="https://github.com/loonghao/auroraview/graphs/contributors"><img src="https://img.shields.io/github/contributors/loonghao/auroraview" alt="Contributors"></a>
+  <a href="https://github.com/try-auroraview/auroraview/issues"><img src="https://img.shields.io/github/issues/try-auroraview/auroraview" alt="Open Issues"></a>
+  <a href="https://github.com/try-auroraview/auroraview/pulls"><img src="https://img.shields.io/github/issues-pr/try-auroraview/auroraview" alt="Open PRs"></a>
+  <a href="https://github.com/try-auroraview/auroraview/graphs/contributors"><img src="https://img.shields.io/github/contributors/try-auroraview/auroraview" alt="Contributors"></a>
   <a href="https://conventionalcommits.org"><img src="https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg" alt="Conventional Commits"></a>
 </p>
 
@@ -54,7 +54,7 @@
 <p align="center">
   <a href="./CODE_OF_CONDUCT.md">Code of Conduct</a> •
   <a href="./SECURITY.md">Security Policy</a> •
-  <a href="https://github.com/loonghao/auroraview/issues">Issue Tracker</a>
+  <a href="https://github.com/try-auroraview/auroraview/issues">Issue Tracker</a>
 </p>
 
 
@@ -233,7 +233,7 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev  # Debian/Ubuntu
 
 # Download and install wheel from GitHub Releases
 # Python 3.8+: cp38-abi3, Python 3.7: cp37-cp37m
-pip install https://github.com/loonghao/auroraview/releases/latest/download/auroraview-{version}-cp38-abi3-linux_x86_64.whl
+pip install https://github.com/try-auroraview/auroraview/releases/latest/download/auroraview-{version}-cp38-abi3-linux_x86_64.whl
 ```
 
 Or build from source:
@@ -1477,17 +1477,17 @@ Install `auroraview-cli` using the install script:
 
 **Linux/macOS (bash):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/loonghao/auroraview/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/try-auroraview/auroraview/main/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/loonghao/auroraview/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/try-auroraview/auroraview/main/scripts/install.ps1 | iex
 ```
 
 **Manual Download:**
 
-Download pre-built binaries from [GitHub Releases](https://github.com/loonghao/auroraview/releases).
+Download pre-built binaries from [GitHub Releases](https://github.com/try-auroraview/auroraview/releases).
 
 | Platform | Download |
 |----------|----------|
@@ -1623,7 +1623,7 @@ auroraview pack --config app.toml --no-console --build
 
 ```bash
 # Clone the repository
-git clone https://github.com/loonghao/auroraview.git
+git clone https://github.com/try-auroraview/auroraview.git
 cd auroraview
 
 # Install tools declared in vx.toml

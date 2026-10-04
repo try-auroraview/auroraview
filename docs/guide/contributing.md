@@ -15,7 +15,7 @@ Thank you for your interest in contributing to AuroraView! This guide will help 
 
 ```bash
 # Clone the repository
-git clone https://github.com/loonghao/auroraview.git
+git clone https://github.com/try-auroraview/auroraview.git
 cd auroraview
 
 # Install Rust toolchain
@@ -435,4 +435,4 @@ Releases are automated via GitHub Actions:
 
 ## Code of Conduct
 
-Please read and follow our [Code of Conduct](https://github.com/loonghao/auroraview/blob/main/CODE_OF_CONDUCT.md).
+Please read and follow our [Code of Conduct](https://github.com/try-auroraview/auroraview/blob/main/CODE_OF_CONDUCT.md).

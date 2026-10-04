@@ -8,7 +8,7 @@ AuroraView provides a modern web-based UI solution for professional DCC applicat
 - **Python**: 3.7+
 - **Platforms**: Windows, macOS, Linux
 - **License**: MIT
-- **Repository**: https://github.com/loonghao/auroraview
+- **Repository**: https://github.com/try-auroraview/auroraview
 - **PyPI**: https://pypi.org/project/auroraview/
 
 ## Agent Quick Start
@@ -632,7 +632,7 @@ Mirror directories (`.cursor/skills/`, `.claude/skills/`) are generated locally 
 ## Submodules
 
 ```bash
-git clone --recurse-submodules https://github.com/loonghao/auroraview.git
+git clone --recurse-submodules https://github.com/try-auroraview/auroraview.git
 git submodule update --init --recursive
 ```
 
@@ -660,9 +660,9 @@ from auroraview import (
 
 ## Documentation
 
-- [AGENTS.md](https://github.com/loonghao/auroraview/blob/main/AGENTS.md): Progressive-disclosure navigation map for AI agents.
-- [llms.txt](https://github.com/loonghao/auroraview/blob/main/llms.txt): Core AI-friendly usage index.
-- [.codebuddy/rules/](https://github.com/loonghao/auroraview/tree/main/.codebuddy/rules): Execution conventions (tech stack, testing, coding guidelines, frontend API, Python API, event system, architecture).
-- [docs/guide/getting-started.md](https://github.com/loonghao/auroraview/blob/main/docs/guide/getting-started.md): Human-facing quick start.
-- [docs/guide/architecture.md](https://github.com/loonghao/auroraview/blob/main/docs/guide/architecture.md): System architecture.
-- [docs/dcc/](https://github.com/loonghao/auroraview/tree/main/docs/dcc): DCC integration guides.
+- [AGENTS.md](https://github.com/try-auroraview/auroraview/blob/main/AGENTS.md): Progressive-disclosure navigation map for AI agents.
+- [llms.txt](https://github.com/try-auroraview/auroraview/blob/main/llms.txt): Core AI-friendly usage index.
+- [.codebuddy/rules/](https://github.com/try-auroraview/auroraview/tree/main/.codebuddy/rules): Execution conventions (tech stack, testing, coding guidelines, frontend API, Python API, event system, architecture).
+- [docs/guide/getting-started.md](https://github.com/try-auroraview/auroraview/blob/main/docs/guide/getting-started.md): Human-facing quick start.
+- [docs/guide/architecture.md](https://github.com/try-auroraview/auroraview/blob/main/docs/guide/architecture.md): System architecture.
+- [docs/dcc/](https://github.com/try-auroraview/auroraview/tree/main/docs/dcc): DCC integration guides.

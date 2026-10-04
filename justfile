@@ -23,6 +23,10 @@ windows_rust_target := "x86_64-pc-windows-msvc"
 default:
     @vx just --list
 
+# Check canonical repository links without building or installing dependencies.
+check-repository-links:
+    vx python scripts/check_repository_links.py
+
 
 # ============================================================================
 # Submodule Migration Tasks

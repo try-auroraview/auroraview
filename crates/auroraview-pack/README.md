@@ -337,4 +337,4 @@ Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guideli
 ## Related Projects
 
 - [aurora-protect](https://github.com/loonghao/aurora-protect): Python code protection toolkit
-- [AuroraView](https://github.com/loonghao/auroraview): WebView framework for DCC applications
+- [AuroraView](https://github.com/try-auroraview/auroraview): WebView framework for DCC applications

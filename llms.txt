@@ -8,7 +8,7 @@ AuroraView provides a modern web-based UI solution for professional DCC applicat
 - **Python**: 3.7+
 - **Platforms**: Windows, macOS, Linux
 - **License**: MIT
-- **Repository**: https://github.com/loonghao/auroraview
+- **Repository**: https://github.com/try-auroraview/auroraview
 
 ## Agent Quick Start
 
@@ -160,8 +160,8 @@ Performance targets: first visible < 300ms, FPS ≥ 60, idle CPU ≤ 5%, memory 
 
 ## Documentation
 
-- [AGENTS.md](https://github.com/loonghao/auroraview/blob/main/AGENTS.md): Progressive-disclosure navigation map for AI agents.
-- [.codebuddy/rules/](https://github.com/loonghao/auroraview/tree/main/.codebuddy/rules): Execution conventions (tech stack, testing, coding guidelines, frontend API, Python API, event system, architecture).
-- [docs/guide/getting-started.md](https://github.com/loonghao/auroraview/blob/main/docs/guide/getting-started.md): Human-facing quick start.
-- [docs/guide/architecture.md](https://github.com/loonghao/auroraview/blob/main/docs/guide/architecture.md): System architecture.
-- [docs/dcc/](https://github.com/loonghao/auroraview/tree/main/docs/dcc): DCC integration guides.
+- [AGENTS.md](https://github.com/try-auroraview/auroraview/blob/main/AGENTS.md): Progressive-disclosure navigation map for AI agents.
+- [.codebuddy/rules/](https://github.com/try-auroraview/auroraview/tree/main/.codebuddy/rules): Execution conventions (tech stack, testing, coding guidelines, frontend API, Python API, event system, architecture).
+- [docs/guide/getting-started.md](https://github.com/try-auroraview/auroraview/blob/main/docs/guide/getting-started.md): Human-facing quick start.
+- [docs/guide/architecture.md](https://github.com/try-auroraview/auroraview/blob/main/docs/guide/architecture.md): System architecture.
+- [docs/dcc/](https://github.com/try-auroraview/auroraview/tree/main/docs/dcc): DCC integration guides.

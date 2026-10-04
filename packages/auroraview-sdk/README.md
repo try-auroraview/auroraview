@@ -307,10 +307,10 @@ The SDK is designed to work within AuroraView's WebView environment. It requires
 
 ## License
 
-MIT © [AuroraView Contributors](https://github.com/loonghao/auroraview)
+MIT © [AuroraView Contributors](https://github.com/try-auroraview/auroraview)
 
 ## Links
 
-- [Documentation](https://loonghao.github.io/auroraview/)
-- [GitHub Repository](https://github.com/loonghao/auroraview)
-- [Issue Tracker](https://github.com/loonghao/auroraview/issues)
+- [Documentation](https://try-auroraview.github.io/auroraview/)
+- [GitHub Repository](https://github.com/try-auroraview/auroraview)
+- [Issue Tracker](https://github.com/try-auroraview/auroraview/issues)

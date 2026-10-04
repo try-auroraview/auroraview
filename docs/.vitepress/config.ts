@@ -127,9 +127,9 @@ export default defineConfig({
       {
         text: 'Links',
         items: [
-          { text: 'GitHub', link: 'https://github.com/loonghao/auroraview' },
+          { text: 'GitHub', link: 'https://github.com/try-auroraview/auroraview' },
           { text: 'PyPI', link: 'https://pypi.org/project/auroraview/' },
-          { text: 'Changelog', link: 'https://github.com/loonghao/auroraview/blob/main/CHANGELOG.md' },
+          { text: 'Changelog', link: 'https://github.com/try-auroraview/auroraview/blob/main/CHANGELOG.md' },
         ]
       }
     ],
@@ -221,7 +221,7 @@ export default defineConfig({
     },
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/loonghao/auroraview' }
+      { icon: 'github', link: 'https://github.com/try-auroraview/auroraview' }
     ],
 
     footer: {
@@ -234,7 +234,7 @@ export default defineConfig({
     },
 
     editLink: {
-      pattern: 'https://github.com/loonghao/auroraview/edit/main/website/:path',
+      pattern: 'https://github.com/try-auroraview/auroraview/edit/main/docs/:path',
       text: 'Edit this page on GitHub'
     }
   }

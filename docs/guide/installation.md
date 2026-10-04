@@ -60,7 +60,7 @@ To build from source:
 
 ```bash
 # Clone the repository
-git clone https://github.com/loonghao/auroraview.git
+git clone https://github.com/try-auroraview/auroraview.git
 cd auroraview
 
 # Install Rust (if not already installed)

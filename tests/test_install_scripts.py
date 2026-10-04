@@ -50,7 +50,7 @@ class TestInstallScriptSyntax:
         """Test that install.sh has correct repo configuration."""
         script_path = PROJECT_ROOT / "scripts" / "install.sh"
         content = script_path.read_text(encoding="utf-8")
-        assert 'REPO="loonghao/auroraview"' in content, "install.sh should have correct repo"
+        assert 'REPO="try-auroraview/auroraview"' in content, "install.sh should have correct repo"
         assert 'BINARY_NAME="auroraview-cli"' in content, (
             "install.sh should have correct binary name"
         )
@@ -59,7 +59,9 @@ class TestInstallScriptSyntax:
         """Test that install.ps1 has correct repo configuration."""
         script_path = PROJECT_ROOT / "scripts" / "install.ps1"
         content = script_path.read_text(encoding="utf-8")
-        assert '$Repo = "loonghao/auroraview"' in content, "install.ps1 should have correct repo"
+        assert '$Repo = "try-auroraview/auroraview"' in content, (
+            "install.ps1 should have correct repo"
+        )
         assert '$BinaryName = "auroraview-cli"' in content, (
             "install.ps1 should have correct binary name"
         )

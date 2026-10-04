@@ -1,6 +1,6 @@
 blank_issues_disabled: true
 contact_links:
   - name: Documentation
-    url: https://github.com/loonghao/auroraview#readme
+    url: https://github.com/try-auroraview/auroraview#readme
     about: Read the README and docs before filing an issue
 

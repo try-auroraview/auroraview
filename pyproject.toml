@@ -75,10 +75,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/loonghao/auroraview"
-Documentation = "https://github.com/loonghao/auroraview#readme"
-Repository = "https://github.com/loonghao/auroraview"
-Issues = "https://github.com/loonghao/auroraview/issues"
+Homepage = "https://github.com/try-auroraview/auroraview"
+Documentation = "https://github.com/try-auroraview/auroraview#readme"
+Repository = "https://github.com/try-auroraview/auroraview"
+Issues = "https://github.com/try-auroraview/auroraview/issues"
 
 [project.scripts]
 auroraview = "auroraview.__main__:main"

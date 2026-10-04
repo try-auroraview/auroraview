@@ -8,7 +8,7 @@ AuroraView Gallery 是一个综合展示应用，演示了 AuroraView 框架的�
 
 | 平台 | 下载 |
 |------|------|
-| Windows | [auroraview-gallery-windows.zip](https://github.com/loonghao/auroraview/releases/latest) |
+| Windows | [auroraview-gallery-windows.zip](https://github.com/try-auroraview/auroraview/releases/latest) |
 
 > **注意**：Gallery 是使用 `auroraview-cli` 打包的独立应用程序。它包含所有依赖项，不需要安装 Python。
 
@@ -85,7 +85,7 @@ Gallery 展示了以下 AuroraView 能力：
 
 ```bash
 # 克隆仓库
-git clone https://github.com/loonghao/auroraview.git
+git clone https://github.com/try-auroraview/auroraview.git
 cd auroraview
 
 # 安装依赖

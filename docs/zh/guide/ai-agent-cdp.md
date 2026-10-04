@@ -3,7 +3,7 @@
 > ⚠️ **独立的 `auroraview-mcp` Python 包已停用。**
 > AuroraView 现在通过 [`dcc-mcp-core`](https://github.com/loonghao/dcc-mcp-core)
 > 的 gateway + skills 作为一类 DCC adapter 对 agent 暴露自己 —— 详见统一重构 epic
-> [#364](https://github.com/loonghao/auroraview/issues/364)。下文的
+> [#364](https://github.com/try-auroraview/auroraview/issues/364)。下文的
 > `pip install auroraview-mcp` / `uvx auroraview-mcp` 指令仅作历史参考；
 > 新架构（`crates/auroraview-mcp` adapter crate）落地中，进度见 #365–#368。
 

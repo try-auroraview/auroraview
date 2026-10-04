@@ -445,7 +445,7 @@ jobs:
             echo "TO FIX — add this repo as a trusted publisher on npm:"
             echo "  1. Go to https://www.npmjs.com/package/@auroraview/sdk/access"
             echo "  2. Click 'Trusted Publishers' → 'Add Trusted Publisher'"
-            echo "  3. Set: Owner=loonghao, Repository=auroraview, Workflow filename=release.yml, Environment=npm"
+            echo "  3. Set: Owner=try-auroraview, Repository=auroraview, Workflow filename=release.yml, Environment=npm"
             echo "  4. Save, then re-run this workflow"
           elif grep -Eiq 'ENEEDAUTH|E401|authentication|must be logged in|not authorized' "$publish_log"; then
             echo "ERROR: npm authentication failed."
@@ -489,7 +489,7 @@ jobs:
             echo "**npm token policy (Nov 2025):** all granular access tokens with write permission expire after 90 days max." >> $GITHUB_STEP_SUMMARY
             echo "**Solution:** Use OIDC trusted publishing — no tokens, no expiry, no rotation." >> $GITHUB_STEP_SUMMARY
             echo "Configure at: https://www.npmjs.com/package/@auroraview/sdk/access → Trusted Publishers" >> $GITHUB_STEP_SUMMARY
-            echo "Owner: loonghao | Repository: auroraview | Workflow filename: release.yml | Environment: npm" >> $GITHUB_STEP_SUMMARY
+            echo "Owner: try-auroraview | Repository: auroraview | Workflow filename: release.yml | Environment: npm" >> $GITHUB_STEP_SUMMARY
           fi
 
   # (Removed) `mcp-pypi-publish` — the standalone `auroraview-mcp` PyPI package

@@ -36,10 +36,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/loonghao/auroraview"
-Documentation = "https://loonghao.github.io/auroraview/"
-Repository = "https://github.com/loonghao/auroraview"
-Issues = "https://github.com/loonghao/auroraview/issues"
+Homepage = "https://github.com/try-auroraview/auroraview"
+Documentation = "https://try-auroraview.github.io/auroraview/"
+Repository = "https://github.com/try-auroraview/auroraview"
+Issues = "https://github.com/try-auroraview/auroraview/issues"
 
 [build-system]
 requires = ["hatchling"]

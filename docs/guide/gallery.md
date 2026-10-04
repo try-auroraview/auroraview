@@ -8,7 +8,7 @@ Get the latest Gallery release:
 
 | Platform | Download |
 |----------|----------|
-| Windows | [auroraview-gallery-windows.zip](https://github.com/loonghao/auroraview/releases/latest) |
+| Windows | [auroraview-gallery-windows.zip](https://github.com/try-auroraview/auroraview/releases/latest) |
 
 > **Note**: Gallery is a standalone application packaged with `auroraview-cli`. It includes all dependencies and does not require Python installation.
 
@@ -85,7 +85,7 @@ If you want to run Gallery from source:
 
 ```bash
 # Clone the repository
-git clone https://github.com/loonghao/auroraview.git
+git clone https://github.com/try-auroraview/auroraview.git
 cd auroraview
 
 # Install dependencies

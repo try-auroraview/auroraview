@@ -66,7 +66,7 @@ export function QuickLinks({ onCategoryClick, onOpenLink }: QuickLinksProps) {
         description="An overview of app development options and samples."
       />
       <QuickLink
-        onClick={() => onOpenLink('https://github.com/loonghao/auroraview', 'GitHub - AuroraView')}
+        onClick={() => onOpenLink('https://github.com/try-auroraview/auroraview', 'GitHub - AuroraView')}
         icon={<Icons.Github className="w-6 h-6 text-white" />}
         iconGradient="from-gray-600 to-gray-800"
         title="GitHub Repo"
@@ -81,7 +81,7 @@ export function QuickLinks({ onCategoryClick, onOpenLink }: QuickLinksProps) {
         description="Find samples that demonstrate specific tasks, features and APIs."
       />
       <QuickLink
-        onClick={() => onOpenLink('https://github.com/loonghao/auroraview/issues', 'GitHub Issues - AuroraView')}
+        onClick={() => onOpenLink('https://github.com/try-auroraview/auroraview/issues', 'GitHub Issues - AuroraView')}
         icon={<Icons.MessageSquare className="w-6 h-6 text-white" />}
         iconGradient="from-emerald-500 to-green-600"
         title="Send Feedback"

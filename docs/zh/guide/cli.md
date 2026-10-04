@@ -28,7 +28,7 @@ auroraview --url https://example.com --title "我的应用" --width 1024 --heigh
 
 ### Rust CLI (用于打包)
 
-从 [GitHub Releases](https://github.com/loonghao/auroraview/releases) 下载或从源码构建：
+从 [GitHub Releases](https://github.com/try-auroraview/auroraview/releases) 下载或从源码构建：
 
 ```bash
 # 从源码构建

@@ -95,7 +95,7 @@ window.addEventListener('auroraviewready', () => {
 `with_drag_drop_handler`。
 
 原因：多 WebView 叠加场景下，OS 拖放在 controller 与业务 tab 像素边界穿越时，
-状态机无法收敛（详见 [RFC 0016 §2.1](https://github.com/loonghao/auroraview/blob/main/docs/rfcs/0016-browser-mode-disable-capture-file-drop.md#21-why-business-tabs-attached-controller-not-attached-is-unworkable)）。
+状态机无法收敛（详见 [RFC 0016 §2.1](https://github.com/try-auroraview/auroraview/blob/main/docs/rfcs/0016-browser-mode-disable-capture-file-drop.md#21-why-business-tabs-attached-controller-not-attached-is-unworkable)）。
 
 **替代方案**：把需要绝对路径的页面改造为顶层 `AuroraView` 实例（独立窗口、单
 WebView），在该实例上设 `capture_file_drop=True`。
@@ -201,7 +201,7 @@ class MyMayaTool(AuroraView):
 
 ## 相关 RFC
 
-- [RFC 0013 总览](https://github.com/loonghao/auroraview/blob/main/docs/rfcs/0013-default-file-drop-improve.md)
-- [RFC 0015 Helper](https://github.com/loonghao/auroraview/blob/main/docs/rfcs/0015-attach-drag-drop-helper.md)
-- [RFC 0016 Browser 模式](https://github.com/loonghao/auroraview/blob/main/docs/rfcs/0016-browser-mode-disable-capture-file-drop.md)
-- [RFC 0017 Python 三态](https://github.com/loonghao/auroraview/blob/main/docs/rfcs/0017-python-capture-file-drop-tristate.md)
+- [RFC 0013 总览](https://github.com/try-auroraview/auroraview/blob/main/docs/rfcs/0013-default-file-drop-improve.md)
+- [RFC 0015 Helper](https://github.com/try-auroraview/auroraview/blob/main/docs/rfcs/0015-attach-drag-drop-helper.md)
+- [RFC 0016 Browser 模式](https://github.com/try-auroraview/auroraview/blob/main/docs/rfcs/0016-browser-mode-disable-capture-file-drop.md)
+- [RFC 0017 Python 三态](https://github.com/try-auroraview/auroraview/blob/main/docs/rfcs/0017-python-capture-file-drop-tristate.md)
