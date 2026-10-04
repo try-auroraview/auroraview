@@ -642,14 +642,25 @@ jobs:
           echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
           echo "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN" >> "$GITHUB_ENV"
 
-          MSRV_RUSTC="$(vx --use-system-path --inherit-env rustup run 1.95.0 rustc --version)"
+          # VX 0.9.33 checks its manager store even with --use-system-path.
+          # Keep vx just orchestration and use only this installed CI executable.
+          AURORAVIEW_CI_RUSTUP="$(command -v rustup)"
+          case "$AURORAVIEW_CI_RUSTUP" in
+            /*) ;;
+            *) echo "::error::rustup must resolve to an absolute path"; exit 1 ;;
+          esac
+          test -x "$AURORAVIEW_CI_RUSTUP"
+          export AURORAVIEW_CI_RUSTUP
+          echo "AURORAVIEW_CI_RUSTUP=$AURORAVIEW_CI_RUSTUP" >> "$GITHUB_ENV"
+
+          MSRV_RUSTC="$("$AURORAVIEW_CI_RUSTUP" run 1.95.0 rustc --version)"
           case "$MSRV_RUSTC" in
             "rustc 1.95.0 "*) echo "$MSRV_RUSTC" ;;
             *) echo "::error::expected Rust 1.95.0, got $MSRV_RUSTC"; exit 1 ;;
           esac
-          vx --use-system-path --inherit-env rustup run 1.95.0 rustc -vV
-          MSRV_SYSROOT="$(vx --use-system-path --inherit-env rustup run 1.95.0 rustc --print sysroot)"
-          MSRV_HOST="$(vx --use-system-path --inherit-env rustup run 1.95.0 rustc -vV | awk '/^host:/ {print $2}')"
+          "$AURORAVIEW_CI_RUSTUP" run 1.95.0 rustc -vV
+          MSRV_SYSROOT="$("$AURORAVIEW_CI_RUSTUP" run 1.95.0 rustc --print sysroot)"
+          MSRV_HOST="$("$AURORAVIEW_CI_RUSTUP" run 1.95.0 rustc -vV | awk '/^host:/ {print $2}')"
           MSRV_BIN="$MSRV_SYSROOT/lib/rustlib/$MSRV_HOST/bin"
           for tool in llvm-profdata llvm-cov; do
             if [ ! -x "$MSRV_BIN/$tool" ]; then

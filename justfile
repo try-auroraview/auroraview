@@ -620,10 +620,11 @@ ci-docs-rust: ci-assets-build
     @echo "[OK] Rust documentation checks completed"
 
 # Documentation checks using the MSRV system toolchain installed by CI.
+# This CI-only executable route avoids the VX 0.9.33 manager-store check.
 [unix]
 ci-docs-rust-msrv: ci-assets-build
-    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo test --doc
-    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" RUSTDOCFLAGS="-D warnings" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo doc --no-deps --document-private-items
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" "${AURORAVIEW_CI_RUSTUP:?set by the PR MSRV toolchain verification step}" run {{rust_msrv}} cargo test --doc
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" RUSTDOCFLAGS="-D warnings" "${AURORAVIEW_CI_RUSTUP:?set by the PR MSRV toolchain verification step}" run {{rust_msrv}} cargo doc --no-deps --document-private-items
 
 [unix]
 ci-cli-build TARGET:
@@ -683,10 +684,11 @@ ci-rust-coverage-lcov: llvm-cov-install nextest-install
 
 # Coverage using the MSRV system toolchain and its bundled LLVM tools.
 # The PR job installs the toolchain, cargo-llvm-cov and cargo-nextest.
+# This CI-only executable route avoids the VX 0.9.33 manager-store check.
 [unix]
 ci-rust-coverage-lcov-msrv:
-    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo llvm-cov nextest --no-report --features "test-helpers" --config-file .config/nextest.toml --profile ci --tests
-    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" vx --use-system-path --inherit-env rustup run {{rust_msrv}} cargo llvm-cov report --lcov --output-path rust-coverage.lcov
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" "${AURORAVIEW_CI_RUSTUP:?set by the PR MSRV toolchain verification step}" run {{rust_msrv}} cargo llvm-cov nextest --no-report --features "test-helpers" --config-file .config/nextest.toml --profile ci --tests
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" "${AURORAVIEW_CI_RUSTUP:?set by the PR MSRV toolchain verification step}" run {{rust_msrv}} cargo llvm-cov report --lcov --output-path rust-coverage.lcov
 
 [windows]
 ci-rust-coverage-lcov:
