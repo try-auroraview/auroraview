@@ -8,7 +8,9 @@ This module provides lifecycle methods for the WebView class.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -33,35 +35,9 @@ def _is_panic_exception(exc: BaseException) -> bool:
     return type(exc).__name__ == "PanicException"
 
 
-def _request_close_via_channel(core: Any) -> bool:
-    """Ask ``core`` to close through the module-level close channel.
-
-    The Rust ``WebView`` is ``unsendable``: PyO3 raises ``PanicException`` (a
-    ``BaseException``, so ``except Exception`` does not catch it) the moment any
-    method body runs on a thread other than the one that created the object, and
-    the underlying ``wry``/``tao`` window must likewise be torn down on its
-    creator thread.
-
-    ``core.get_proxy()`` returns a ``WebViewProxy`` that only holds
-    thread-shared state (the ``Arc<MessageQueue>`` drained by the owner thread's
-    event loop), so requesting a close through it is safe from any thread: the
-    owner thread's event loop performs the actual teardown.
-
-    Args:
-        core: The Rust core WebView instance.
-
-    Returns:
-        bool: True when the close request was handed to the channel, False when
-        the core exposes no thread-safe proxy.
-    """
-    get_proxy = getattr(core, "get_proxy", None)
-    if get_proxy is None:
-        return False
-
-    try:
-        proxy = get_proxy()
-    except Exception as e:
-        logger.warning(f"Could not obtain a thread-safe close proxy: {e}")
+def _request_close_via_channel(proxy: Any) -> bool:
+    """Request close using a proxy previously captured on the core's owner thread."""
+    if proxy is None:
         return False
 
     try:
@@ -104,6 +80,205 @@ class WebViewLifecycleMixin:
             threads = {}
             self._core_threads = threads
         threads[id(core)] = threading.get_ident()
+        proxies = getattr(self, "_core_proxies", None)
+        if proxies is None:
+            proxies = {}
+            self._core_proxies = proxies
+        # This must run on the creating thread. Even get_proxy() is a method
+        # on the unsendable PyO3 object; it cannot be called after handoff.
+        get_proxy = getattr(core, "get_proxy", None)
+        if get_proxy is not None:
+            try:
+                proxies[id(core)] = get_proxy()
+            except Exception:
+                logger.debug("Core does not provide a usable proxy", exc_info=True)
+        emitters = getattr(self, "_core_emitters", None)
+        if emitters is None:
+            emitters = self._core_emitters = {}
+        create_emitter = getattr(core, "create_emitter", None)
+        if create_emitter is not None:
+            try:
+                emitters[id(core)] = create_emitter()
+            except Exception:
+                logger.debug("Core does not provide a usable EventEmitter", exc_info=True)
+
+    def _is_core_owner(self, core: Any) -> bool:
+        if core is None:
+            return True  # Packed mode has no native object to access.
+        owner = getattr(self, "_core_threads", {}).get(id(core))
+        # Unknown ownership must never authorize native method access. Tests or
+        # integrations injecting a core must track it on its creating thread.
+        return owner is not None and owner == threading.get_ident()
+
+    def _get_active_core(self) -> Any:
+        """Select a core without accessing any of its native methods."""
+        with self._async_core_lock:
+            self._check_open()
+            if self._async_core is not None:
+                return self._async_core
+            if getattr(self, "_is_running", False) and self._show_thread is not None:
+                raise RuntimeError("WebView is starting; its command proxy is not ready")
+            return self._core
+
+    def _command_target(self) -> Any:
+        """Return the active owner core or its cached, send-safe command proxy."""
+        core = self._get_active_core()
+        if core is None:
+            raise RuntimeError("WebView has no native core")
+        if self._is_core_owner(core):
+            return core
+        proxy = getattr(self, "_core_proxies", {}).get(id(core))
+        if proxy is None:
+            raise RuntimeError("WebView has no cached cross-thread command proxy")
+        return proxy
+
+    def _require_owner_core(self, operation: str) -> Any:
+        core = self._get_active_core()
+        if core is None or not self._is_core_owner(core):
+            raise RuntimeError(f"{operation} must run on the WebView owner thread")
+        return core
+
+    def _check_open(self) -> None:
+        if getattr(self, "_close_requested", False):
+            raise RuntimeError("WebView is closed; create a fresh WebView to reopen")
+
+    @property
+    def startup_error(self) -> Optional[Exception]:
+        """Background owner failure, or None; inspect after ``wait(0)`` completes."""
+        return getattr(self, "_startup_error", None)
+
+    @property
+    def cleanup_pending(self) -> bool:
+        """True while timer cleanup still needs its owning host thread."""
+        return getattr(self, "_timer_cleanup_pending", False)
+
+    @property
+    def close_pending(self) -> bool:
+        """True when at least one native close request still needs a retry."""
+        return bool(getattr(self, "_close_pending", {}))
+
+    def _send_core_close(self, core: Any) -> None:
+        """Send once per core, retaining unsuccessful targets for later retries."""
+        core_id = id(core)
+        if core_id in self._close_sent:
+            return
+        proxy = getattr(self, "_core_proxies", {}).get(core_id)
+        try:
+            if not self._is_core_owner(core):
+                if not _request_close_via_channel(proxy):
+                    raise RuntimeError("Could not send WebView close through its cached proxy")
+            else:
+                try:
+                    core.close()
+                except BaseException as exc:  # noqa: BLE001 - PyO3 panic is a BaseException
+                    if not _is_panic_exception(exc):
+                        raise
+                    if not _request_close_via_channel(proxy):
+                        raise RuntimeError(
+                            "Could not send WebView close after native panic"
+                        ) from exc
+        except Exception as exc:
+            # Keep the owner-created send-safe target independently of the
+            # native core reference, which the owner may release on exit.
+            self._close_pending[core_id] = (proxy, str(exc))
+            self._close_send_done.clear()
+            raise
+        self._mark_close_sent(core_id)
+
+    def _mark_close_sent(self, core_id: int) -> None:
+        self._close_sent.add(core_id)
+        self._close_pending.pop(core_id, None)
+        if not self._close_pending:
+            self._close_send_done.set()
+
+    def _retry_pending_close(self, core_id: int, proxy: Any) -> None:
+        """Retry a detached target using only its retained send-safe proxy."""
+        if not _request_close_via_channel(proxy):
+            message = "Could not retry WebView close through its retained send-safe proxy"
+            self._close_pending[core_id] = (proxy, message)
+            self._close_send_done.clear()
+            raise RuntimeError(message)
+        self._mark_close_sent(core_id)
+
+    def _observe_native_close(self) -> None:
+        """Record the pump's close indication separately from send/cleanup errors.
+
+        This records an observed lifecycle event, not proof of native resource
+        destruction or collection of Rust-held Python callbacks.
+        """
+        with self._lifecycle_lock:
+            self._native_close_observed = True
+            self._is_running = False
+            timer = getattr(self, "_auto_timer", None)
+            if timer is not None:
+                # Publish pending host work before publishing native-close
+                # observation, including the interval before observers start.
+                self._timer_cleanup_pending = True
+                self._host_cleanup_done.clear()
+            self._closed_event.set()
+        observe = getattr(timer, "_observe_close", None)
+        if observe is not None:
+            observe()
+
+    def _cleanup_auto_timer(self) -> bool:
+        """Claim cleanup briefly, then invoke observers without holding our lock."""
+        with self._lifecycle_lock:
+            timer = getattr(self, "_auto_timer", None)
+            completed = getattr(self, "_host_cleanup_done", None)
+            if timer is None:
+                self._timer_cleanup_pending = False
+                if completed is not None:
+                    completed.set()
+                return True
+            if completed is None:
+                completed = self._host_cleanup_done = threading.Event()
+            completed.clear()
+            self._timer_cleanup_pending = True
+            if getattr(self, "_timer_cleanup_active", False):
+                return False
+            self._timer_cleanup_active = True
+
+        try:
+            can_cleanup = getattr(timer, "can_cleanup_from_current_thread", None)
+            if can_cleanup is None or not can_cleanup():
+                return False
+
+            # A synchronous embedded loop still needs its final owner-thread
+            # drain. Never stop the only host pump before its close is handled.
+            if getattr(self, "_is_running", False) and self._show_thread is None:
+                core = self._core
+                if core is None or not self._is_core_owner(core):
+                    return False
+                try:
+                    should_close = core.process_ipc_only()
+                except Exception:
+                    logger.warning("Owner event drain remains pending", exc_info=True)
+                    return False
+                if not should_close:
+                    return False
+                self._observe_native_close()
+            try:
+                if getattr(timer, "processing_events", False) is True:
+                    # The timer must deliver its once-only close notification
+                    # before callbacks and wrapper references are released.
+                    timer.stop()
+                    return False
+                if timer.cleanup() is False:
+                    return False
+            except Exception:
+                logger.warning("Host timer cleanup remains pending", exc_info=True)
+                return False
+            with self._lifecycle_lock:
+                if self._auto_timer is timer:
+                    self._auto_timer = None
+                if self._auto_timer is not None:
+                    return False
+                self._timer_cleanup_pending = False
+                completed.set()
+                return True
+        finally:
+            with self._lifecycle_lock:
+                self._timer_cleanup_active = False
 
     # Type hints for attributes from main class
     _core: Any
@@ -190,11 +365,7 @@ class WebViewLifecycleMixin:
             return
 
         # Detect mode
-        is_embedded = (
-            self._core is not None
-            and hasattr(self._core, "_is_embedded")
-            and self._core._is_embedded
-        )
+        is_embedded = getattr(self, "_is_embedded", False)
 
         if wait is None:
             wait = not is_embedded  # Standalone=blocking, Embedded=non-blocking
@@ -207,50 +378,53 @@ class WebViewLifecycleMixin:
     def show_async(self) -> None:
         """Show the WebView window in non-blocking mode (compatibility helper).
 
-        Equivalent to calling show(wait=False). Safe to call multiple times; if the
-        WebView is already running, the call is ignored.
+        Equivalent to calling show(wait=False). Currently supported on Windows
+        only. If already running, the call is ignored. After close, construct a
+        fresh WebView instead of reusing native state from an earlier window.
         """
         self._show_non_blocking()
 
     def _show_non_blocking(self) -> None:
-        """Internal method: non-blocking show (background thread)."""
-        if self._is_running:
-            logger.warning("WebView is already running")
-            return
+        """Start a Windows owner thread; other platforms require a host loop.
 
-        logger.info(f"Showing WebView in background thread: {self._title}")
-        self._is_running = True
+        Native Linux/macOS background-thread window creation has not been
+        validated. Reject it before creating a thread or touching GUI state.
+        Closed instances are single-use: create a new WebView to reopen.
+        """
+        with self._lifecycle_lock:
+            self._check_open()
+            if self._is_running:
+                return
+            if sys.platform != "win32":
+                raise RuntimeError(
+                    "Background-thread WebView windows are only supported on Windows; "
+                    "Linux/macOS require a supported main-thread host integration"
+                )
+            self._is_running = True
+            self._closed_event.clear()
+            self._startup_error = None
 
         def _run_webview():
-            """Run the WebView in a background thread.
-
-            Note: We create a new WebView instance in the background thread
-            because the Rust core requires the WebView to be created and shown
-            in the same thread due to GUI event loop requirements.
-            """
+            """Create, register, show and release native state on its owner."""
+            core = None
             try:
-                logger.info("Background thread: Creating WebView instance")
-                # Create a new WebView instance in this thread
-                # This is necessary because the Rust core is not Send/Sync
-                from auroraview._core import WebView as _CoreWebView
-
-                core = _CoreWebView(
+                if self._close_requested:
+                    return
+                # Share one normalized constructor snapshot with synchronous
+                # creation, including content/security/network/download options.
+                config = dict(self._core_kwargs)
+                config.update(
+                    url=self._stored_url,
+                    html=self._stored_html,
                     title=self._title,
                     width=self._width,
                     height=self._height,
-                    dev_tools=self._debug,  # Use new parameter name
-                    resizable=self._resizable,
-                    decorations=self._frame,  # Use new parameter name
-                    parent_hwnd=self._parent,  # Use new parameter name
-                    parent_mode=self._mode,  # Use new parameter name
-                    always_on_top=self._always_on_top,  # Keep window always on top
-                    transparent=self._transparent,  # Enable transparent window
-                    background_color=self._background_color,  # Window background color
-                    tool_window=self._tool_window,  # Tool window style
-                    undecorated_shadow=self._undecorated_shadow,  # Shadow for frameless
-                    allow_new_window=self._allow_new_window,  # Allow window.open()
-                    remote_debugging_port=self._remote_debugging_port,  # CDP port
+                    always_on_top=self._always_on_top,
                 )
+                core = self._core_factory(**config)
+                self._track_core_thread(core)
+                if self._core_proxies.get(id(core)) is None:
+                    raise RuntimeError("Background WebView requires a send-safe native proxy")
 
                 # Set up HWND callback to cache HWND for cross-thread access
                 def on_hwnd_created(hwnd: int) -> None:
@@ -261,65 +435,55 @@ class WebViewLifecycleMixin:
                 if hasattr(core, "set_on_hwnd_created"):
                     core.set_on_hwnd_created(on_hwnd_created)
 
-                # Store the core instance for use by emit() and other methods
-                with self._async_core_lock:
-                    self._async_core = core
-
-                # The core is created here, so this background thread owns it.
-                self._track_core_thread(core)
-
-                # If close was requested before the background core became ready,
-                # exit early without entering the event loop.
-                if getattr(self, "_close_requested", False):
-                    logger.info(
-                        "Background thread: close already requested; skipping show() and exiting"
-                    )
-                    return
-
-                # Re-register all event handlers in the background thread
-                # Snapshot the handlers under lock to avoid race conditions
-                # with the main thread adding handlers concurrently.
-                with self._event_handlers_lock:
-                    handlers_snapshot = {k: list(v) for k, v in self._event_handlers.items()}
-
-                logger.info(
-                    f"Background thread: Re-registering {len(handlers_snapshot)} event handlers"
-                )
-                for event_name, handlers in handlers_snapshot.items():
-                    for handler in handlers:
-                        logger.debug(f"Background thread: Registering handler for '{event_name}'")
-                        core.on(event_name, handler)
-
-                # Load the same content that was loaded in the main thread
-                if self._stored_html:
-                    logger.info("Background thread: Loading stored HTML")
-                    core.load_html(self._stored_html)
-                elif self._stored_url:
-                    logger.info("Background thread: Loading stored URL")
-                    core.load_url(self._stored_url)
-                else:
-                    logger.warning("Background thread: No content loaded")
-
-                logger.info("Background thread: Starting WebView event loop")
+                with self._lifecycle_lock:
+                    if self._close_requested:
+                        return
+                    self._replay_event_bindings(core)
+                    self._replay_api_bindings(core)
+                    # Publish only after proxy and every binding are installed.
+                    with self._async_core_lock:
+                        self._async_core = core
                 core.show()
-                # Note: show() is blocking - the HWND callback is invoked before
-                # entering the event loop, so _cached_hwnd is already set
-                logger.info("Background thread: WebView event loop exited")
             except Exception as e:
+                self._startup_error = e
                 logger.error(f"Error in background WebView: {e}", exc_info=True)
             finally:
-                # Clear the async core reference
-                with self._async_core_lock:
-                    self._async_core = None
-                self._is_running = False
-                logger.info("Background thread: WebView thread finished")
+                # Close-before-ready and construction failures must use this
+                # same owner cleanup path, without joining the host UI thread.
+                try:
+                    try:
+                        self.request_close()
+                    except Exception:
+                        logger.warning("Some native close requests remain pending", exc_info=True)
+                    if core is not None:
+                        with self._lifecycle_lock:
+                            try:
+                                self._send_core_close(core)
+                            except Exception:
+                                logger.warning("Owner close request remains pending", exc_info=True)
+                finally:
+                    with self._async_core_lock:
+                        self._async_core = None
+                    # Retain owner metadata for in-flight callers that already
+                    # selected this core. Erasing it would make a stale foreign
+                    # reference look like an untracked same-thread core.
+                    with self._cached_hwnd_lock:
+                        self._cached_hwnd = None
+                    self._is_running = False
+                    self._closed_event.set()
 
         # Create and start the background thread as daemon
         # CRITICAL: daemon=True allows Maya to exit cleanly when user closes Maya
         # The event loop now uses run_return() instead of run(), which prevents
         # the WebView from calling std::process::exit() and terminating Maya
-        self._show_thread = threading.Thread(target=_run_webview, daemon=True)
-        self._show_thread.start()
+        with self._lifecycle_lock:
+            self._show_thread = threading.Thread(target=_run_webview, daemon=True)
+            try:
+                self._show_thread.start()
+            except Exception:
+                self._is_running = False
+                self._closed_event.set()
+                raise
         logger.info("WebView background thread started (daemon=True)")
 
     def show_blocking(self) -> None:
@@ -339,6 +503,8 @@ class WebViewLifecycleMixin:
         """
         logger.info(f"Showing WebView (blocking): {self._title}")
         logger.info("Calling _core.show()...")
+        self._check_open()
+        core = self._require_owner_core("show_blocking")
 
         # Check if we're in embedded mode
         is_embedded = self._parent is not None  # Use new parameter name
@@ -347,9 +513,11 @@ class WebViewLifecycleMixin:
         # This tells eval_js to skip _auto_process_events since the event loop
         # will handle message queue processing automatically
         self._in_blocking_event_loop = True
+        self._is_running = True
+        self._closed_event.clear()
 
         try:
-            self._core.show()
+            core.show()
             logger.info("_core.show() returned successfully")
         except Exception as e:
             logger.error(f"Error in _core.show(): {e}", exc_info=True)
@@ -357,6 +525,10 @@ class WebViewLifecycleMixin:
         finally:
             # Clear the flag when event loop exits
             self._in_blocking_event_loop = False
+            if not is_embedded:
+                self._is_running = False
+                self.request_close()
+                self._closed_event.set()
 
         # IMPORTANT: Only cleanup in standalone mode
         # In embedded mode, the window should stay open until explicitly closed
@@ -374,6 +546,16 @@ class WebViewLifecycleMixin:
     def wait(self, timeout: Optional[float] = None) -> bool:
         """Wait for the WebView to close.
 
+        Completion requires an observed native close or owner-loop return,
+        accepted close sends and host cleanup. Host UI callbacks must use
+        ``wait(timeout=0)`` to poll;
+        never block a host thread needed for dispatch or native event pumping.
+        ``close()`` itself never waits or joins a thread.
+        If ``cleanup_pending`` is true, the timer's host thread must pump once
+        or call ``close()`` again to finish cleanup; a stopped host stays pending.
+        Neither an observed close flag nor a successful proxy send proves
+        native resource destruction or GC.
+
         Args:
             timeout: Maximum time to wait in seconds (None = indefinitely)
 
@@ -387,89 +569,97 @@ class WebViewLifecycleMixin:
             ... else:
             ...     print("Timeout waiting for WebView")
         """
-        if self._show_thread is None:
-            logger.warning("WebView is not running")
-            return True
-
-        logger.info(f"Waiting for WebView to close (timeout={timeout})")
-        self._show_thread.join(timeout=timeout)
-
-        if self._show_thread.is_alive():
-            logger.warning("Timeout waiting for WebView to close")
+        event = getattr(self, "_closed_event", None)
+        if event is None:
+            return not getattr(self, "_is_running", False) and not self.close_pending
+        if threading.current_thread() is self._show_thread and not event.is_set():
+            if timeout != 0:
+                raise RuntimeError("The WebView owner thread cannot wait for itself")
+        started = time.monotonic()
+        if not event.wait(timeout):
             return False
-
-        logger.info("WebView closed")
-        return True
+        for name in ("_close_send_done", "_host_cleanup_done"):
+            completed = getattr(self, name, None)
+            if completed is not None:
+                remaining = (
+                    None if timeout is None else max(0.0, timeout - (time.monotonic() - started))
+                )
+                if not completed.wait(remaining):
+                    return False
+        return not self.cleanup_pending and not self.close_pending
 
     def close(self) -> None:
-        """Close the WebView window and remove from registries."""
-        logger.info("Closing WebView")
+        """Request close without blocking; use ``wait(0)`` to observe completion.
 
-        # Teardown telemetry before closing
-        self._teardown_telemetry()
+        Closed instances cannot be shown again. Construct a fresh WebView when
+        reopening a host tool, so stale proxies and callbacks cannot be reused.
+        """
+        self.request_close()
 
-        # Mark close intent early so background thread can bail out if it hasn't
-        # entered the event loop yet.
-        self._close_requested = True
+    def request_close(self) -> None:
+        """Cancel admission once, and retry any native close sends that failed.
 
-        # Prefer closing the background-thread core (if present). Fall back to
-        # the main-thread core as a best-effort.
-        cores = []
-        try:
+        Successful targets are not sent again. Failures do not skip other
+        targets or registry cleanup; the first failure is raised afterwards.
+        ``close_pending`` and ``wait(0)`` expose incomplete delivery.
+        """
+        lock = getattr(self, "_lifecycle_lock", None)
+        if lock is None:
+            lock = self._lifecycle_lock = threading.RLock()
+        errors = []
+        with lock:
+            if not hasattr(self, "_close_sent"):
+                self._close_sent = set()
+                self._close_pending = {}
+                self._close_send_done = threading.Event()
+                self._close_send_done.set()
+            if not getattr(self, "_close_requested", False):
+                self._cancel_event_callbacks()
+                self._cancel_pending_calls("WebView closed")
+                self._close_requested = True
+                self._teardown_telemetry()
             with self._async_core_lock:
-                if self._async_core is not None:
-                    cores.append(self._async_core)
-        except Exception:
-            # Lock acquisition should never fail, but keep close best-effort.
-            pass
-
-        cores.append(getattr(self, "_core", None))
-
-        seen = set()
-        for core in cores:
-            if core is None:
-                continue
-            core_id = id(core)
-            if core_id in seen:
-                continue
-            seen.add(core_id)
-
-            # The core records the thread it was created on, so a close raised
-            # from any other thread is routed back through the module-level
-            # close channel instead of touching the unsendable object directly.
-            owner_thread = getattr(self, "_core_threads", {}).get(core_id)
-            if owner_thread is not None and owner_thread != threading.get_ident():
-                logger.info(
-                    "Close requested from a non-owner thread; routing through the close channel"
-                )
-                if _request_close_via_channel(core):
+                cores = [self._async_core, self._core]
+            seen = set()
+            for core in cores:
+                if core is None or id(core) in seen:
                     continue
+                seen.add(id(core))
+                try:
+                    self._send_core_close(core)
+                except Exception as exc:
+                    errors.append(exc)
 
-            try:
-                core.close()
-                logger.info("Core WebView close requested")
-            except BaseException as e:  # noqa: BLE001 - PyO3 PanicException is not an Exception
-                # Swallowing `BaseException` is only justified for PyO3's
-                # `PanicException`, which is what an unsendable core raises when
-                # it is touched from a foreign thread. `KeyboardInterrupt`,
-                # `SystemExit` and anything else must keep propagating - a
-                # teardown path must not turn a Ctrl-C into a warning.
-                if not _is_panic_exception(e):
-                    raise
-                logger.warning(f"Error requesting core close: {e}")
-                if _request_close_via_channel(core):
+            # An async owner can exit and clear _async_core after a failed
+            # close send. Its pending proxy remains independently retryable;
+            # never reacquire or invoke a foreign unsendable native core.
+            for core_id, (proxy, _error) in list(self._close_pending.items()):
+                if core_id in seen:
                     continue
+                try:
+                    self._retry_pending_close(core_id, proxy)
+                except Exception as exc:
+                    errors.append(exc)
 
-        # Wait for background thread if running
-        if self._show_thread is not None and self._show_thread.is_alive():
-            logger.info("Waiting for background thread to finish...")
-            self._show_thread.join(timeout=5.0)
-            if self._show_thread.is_alive():
-                logger.warning("Background thread did not finish within timeout")
-            else:
-                logger.info("Background thread finished successfully")
+            # Mark pending before publishing any native-close completion. The
+            # actual timer cleanup can invoke user observers and must happen
+            # after releasing this lock, including in reentrant close calls.
+            if getattr(self, "_auto_timer", None) is not None:
+                completed = getattr(self, "_host_cleanup_done", None)
+                if completed is None:
+                    completed = self._host_cleanup_done = threading.Event()
+                completed.clear()
+                self._timer_cleanup_pending = True
 
-        # Remove from singleton registry
+            if not getattr(self, "_is_running", False):
+                event = getattr(self, "_closed_event", None)
+                if event is not None:
+                    event.set()
+
+        if not self._cleanup_auto_timer():
+            logger.warning("WebView timer cleanup is pending on its owning host thread")
+
+        # Python registry cleanup does not wait for native teardown.
         for key, instance in list(self._singleton_registry.items()):
             if instance is self:
                 del self._singleton_registry[key]
@@ -477,11 +667,13 @@ class WebViewLifecycleMixin:
                 break
 
         # Remove from WindowManager
-        if self._window_id:
+        if getattr(self, "_window_id", None):
             from ..window_manager import get_window_manager
 
             wm = get_window_manager()
             wm.unregister(self._window_id)
             logger.debug(f"WebView unregistered from WindowManager: {self._window_id}")
 
-        logger.info("WebView closed successfully")
+        logger.info("WebView close requested")
+        if errors:
+            raise errors[0]

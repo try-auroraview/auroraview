@@ -37,6 +37,7 @@ def make_dummy_webview() -> WebView:
 
     webview = WebView.__new__(WebView)
     webview._core = DummyCore()  # type: ignore[attr-defined]
+    webview._track_core_thread(webview._core)
     webview._async_core = None  # type: ignore[attr-defined]
     webview._async_core_lock = threading.RLock()  # type: ignore[attr-defined]
     webview._event_handlers = {}  # type: ignore[attr-defined]

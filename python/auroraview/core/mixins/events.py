@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import traceback
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from auroraview.core.signals import ConnectionId, WebViewSignals
@@ -118,42 +117,9 @@ class WebViewEventMixin:
             logger.debug(f"[OK] [WebView.emit] Event sent to Rust CLI: {event_name}")
             return
 
-        # Use the async core if available (when running in background thread)
-        # If WebView is running in background thread mode, we need to use _async_core
-        # and wait for it to become available
-        core = None
-        if getattr(self, "_is_running", False) and getattr(self, "_show_thread", None) is not None:
-            # WebView is running in background thread mode
-            import time
-
-            timeout = 10.0  # Wait up to 10 seconds for async_core
-            start_time = time.monotonic()
-            while time.monotonic() - start_time < timeout:
-                with self._async_core_lock:
-                    if self._async_core is not None:
-                        core = self._async_core
-                        break
-                time.sleep(0.05)  # Wait 50ms between checks
-
-            if core is None:
-                logger.warning(
-                    "[WebView.emit] Timeout waiting for async_core, WebView may not be ready"
-                )
-                return
-        else:
-            # Not in background thread mode, use regular core
-            with self._async_core_lock:
-                core = self._async_core if self._async_core is not None else self._core
-
-        try:
-            logger.debug("[SEND] [WebView.emit] Calling core.emit()...")
-            core.emit(event_name, data)
-            logger.debug(f"[OK] [WebView.emit] Event emitted successfully: {event_name}")
-        except Exception as e:
-            logger.error(f"[ERROR] [WebView.emit] Failed to emit event {event_name}: {e}")
-            logger.error(f"[ERROR] [WebView.emit] Data was: {data}")
-            logger.error(f"[ERROR] [WebView.emit] Traceback: {traceback.format_exc()}")
-            raise
+        # Do not wait on a host UI thread for startup or call any methods on a
+        # foreign unsendable core. The owner cached this proxy before publication.
+        self._command_target().emit(event_name, data)
 
         # Auto-telemetry: record event emission
         if hasattr(self, "_telemetry_on_emit"):
@@ -195,8 +161,7 @@ class WebViewEventMixin:
             return 0
 
         # Use the async core if available (when running in background thread)
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
+        target = self._command_target()
 
         # Convert events to proper format for Rust
         rust_events = []
@@ -207,7 +172,13 @@ class WebViewEventMixin:
                 data = {"value": data}
             rust_events.append((event_name, data))
 
-        count = core.emit_batch(rust_events)
+        if hasattr(target, "emit_batch"):
+            count = target.emit_batch(rust_events)
+        else:
+            # The send-safe proxy supports individual events, not native batch.
+            for event_name, data in rust_events:
+                target.emit(event_name, data)
+            count = len(rust_events)
         logger.debug(f"[OK] [WebView.emit_batch] Emitted {count} events via Rust")
 
         if auto_process:
@@ -267,6 +238,30 @@ class WebViewEventMixin:
         # Convert WindowEvent enum to string if needed
         event_str = str(event_name)
 
+        core = self._get_active_core()
+        registered = getattr(self, "_registered_events", {}).get(id(core), set())
+        if core is not None and event_str not in registered and not self._is_core_owner(core):
+            raise RuntimeError("Register new events before show() or on the WebView owner thread")
+
+        # Guard the actual user invocation, inside the DCC scheduling wrapper.
+        # Checking only at native dispatch would let already-queued host work
+        # run after close, disconnect, or add-on unload.
+        generation = getattr(self, "_event_generation", 0)
+        active = [True]
+        user_callback = callback
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            with self._event_handlers_lock:
+                if (
+                    not active[0]
+                    or getattr(self, "_events_closed", False)
+                    or getattr(self, "_close_requested", False)
+                    or generation != getattr(self, "_event_generation", 0)
+                ):
+                    return None
+            return user_callback(*args, **kwargs)
+
+        callback = invoke
         # Auto-wrap callback for DCC thread safety if dcc_mode is enabled
         if getattr(self, "_dcc_mode", False):
             from auroraview.utils.thread_dispatcher import wrap_callback_for_dcc
@@ -277,23 +272,61 @@ class WebViewEventMixin:
         # Register with legacy event handlers dict (for backward compatibility)
         # Use lock to protect concurrent access from background threads.
         with self._event_handlers_lock:
+            self._check_open()
+            if getattr(self, "_events_closed", False):
+                raise RuntimeError("WebView event callbacks are closed")
             if event_str not in self._event_handlers:
                 self._event_handlers[event_str] = []
             self._event_handlers[event_str].append(callback)
-
-        # Register with signal system
-        conn_id = self.signals.custom.connect(event_str, callback)
+            # Keep one connection identity across native and signal dispatch.
+            conn_id = self.signals.custom.connect(event_str, callback)
+            if not hasattr(self, "_event_connections"):
+                self._event_connections = {}
+            self._event_connections[conn_id] = (event_str, callback, active)
         logger.debug(f"Registered callback for event: {event_str} (conn_id: {conn_id})")
 
         # Register with core (if available - packed mode may not have core)
-        if self._core is not None:
-            self._core.on(event_str, callback)
+        if core is not None:
+            self._register_native_event(core, event_str)
         else:
             logger.debug(
                 f"Skipped core registration for event {event_str} (packed mode or core not available)"
             )
 
         return conn_id
+
+    def _register_native_event(self, core: Any, event_name: str) -> None:
+        """Install one dispatcher; later handlers stay in the Python registry."""
+        if not hasattr(self, "_registered_events"):
+            self._registered_events = {}
+        registered = self._registered_events.setdefault(id(core), set())
+        if event_name in registered:
+            return
+        if not self._is_core_owner(core):
+            raise RuntimeError("Native event registration requires the WebView owner thread")
+
+        def dispatch(data: Any) -> Any:
+            with self._event_handlers_lock:
+                handlers = list(self._event_handlers.get(event_name, []))
+            result = None
+            for handler in handlers:
+                value = handler(data)
+                # Preserve the closing-event veto convention.
+                if value is False:
+                    result = False
+                elif result is not False:
+                    result = value
+            return result
+
+        core.on(event_name, dispatch)
+        registered.add(event_name)
+
+    def _replay_event_bindings(self, core: Any) -> None:
+        """Replay all registered event names before the new owner starts show()."""
+        with self._event_handlers_lock:
+            names = list(self._event_handlers)
+        for event_name in names:
+            self._register_native_event(core, event_name)
 
     def disconnect(self, event_name: str, conn_id: ConnectionId) -> bool:
         """Disconnect a callback by its ConnectionId.
@@ -305,7 +338,47 @@ class WebViewEventMixin:
         Returns:
             True if callback was disconnected
         """
-        return self.signals.custom.disconnect(event_name, conn_id)
+        event_str = str(event_name)
+        removed = False
+        with self._event_handlers_lock:
+            connections = getattr(self, "_event_connections", {})
+            connection = connections.get(conn_id)
+            if connection is not None and connection[0] == event_str:
+                _name, callback, active = connections.pop(conn_id)
+                active[0] = False
+                handlers = self._event_handlers.get(event_str, [])
+                if callback in handlers:
+                    handlers.remove(callback)
+                if not handlers:
+                    self._event_handlers.pop(event_str, None)
+                removed = True
+        return self.signals.custom.disconnect(event_str, conn_id) or removed
+
+    def _cancel_event_callbacks(self) -> None:
+        """Invalidate queued host callbacks and release both Python registries."""
+        lock = getattr(self, "_event_handlers_lock", None)
+        if lock is None:
+            return
+        with lock:
+            self._events_closed = True
+            self._event_generation = getattr(self, "_event_generation", 0) + 1
+            for _name, _callback, active in getattr(self, "_event_connections", {}).values():
+                active[0] = False
+            self._event_connections = {}
+            self._event_handlers.clear()
+        signals = getattr(self, "_signals", None)
+        if signals is not None:
+            signals.disconnect_all()
+
+    def _connect_lifecycle_signal(
+        self, signal: Any, conn_id: ConnectionId, payload: Callable
+    ) -> None:
+        """Reuse the guarded callback for the lifecycle-signal compatibility path."""
+        with self._event_handlers_lock:
+            connection = self._event_connections.get(conn_id)
+            if connection is not None and not getattr(self, "_events_closed", False):
+                callback = connection[1]
+                signal.connect(lambda *args: callback(payload(*args)))
 
     # =========================================================================
     # Window Event Convenience Methods
@@ -326,9 +399,9 @@ class WebViewEventMixin:
             >>> def handle_loaded(data):
             ...     print("Page loaded!")
         """
-        self.register_callback("loaded", callback)
+        conn_id = self.register_callback("loaded", callback)
         # Also connect to lifecycle signal (wraps to handle None arg)
-        self.signals.page_loaded.connect(lambda: callback({}))
+        self._connect_lifecycle_signal(self.signals.page_loaded, conn_id, lambda: {})
         return callback
 
     def on_shown(self, callback: Callable) -> Callable:
@@ -353,14 +426,14 @@ class WebViewEventMixin:
             ...         return False  # Prevent closing
             ...     return True
         """
-        self.register_callback("closing", callback)
-        self.signals.closing.connect(lambda: callback({}))
+        conn_id = self.register_callback("closing", callback)
+        self._connect_lifecycle_signal(self.signals.closing, conn_id, lambda: {})
         return callback
 
     def on_closed(self, callback: Callable) -> Callable:
         """Register a callback for after the window has closed."""
-        self.register_callback("closed", callback)
-        self.signals.closed.connect(lambda: callback({}))
+        conn_id = self.register_callback("closed", callback)
+        self._connect_lifecycle_signal(self.signals.closed, conn_id, lambda: {})
         return callback
 
     def on_resized(self, callback: Callable) -> Callable:
@@ -375,8 +448,10 @@ class WebViewEventMixin:
             >>> def handle_resize(data):
             ...     print(f"New size: {data['width']}x{data['height']}")
         """
-        self.register_callback("resized", callback)
-        self.signals.resized.connect(lambda size: callback({"width": size[0], "height": size[1]}))
+        conn_id = self.register_callback("resized", callback)
+        self._connect_lifecycle_signal(
+            self.signals.resized, conn_id, lambda size: {"width": size[0], "height": size[1]}
+        )
         return callback
 
     def on_moved(self, callback: Callable) -> Callable:
@@ -386,36 +461,38 @@ class WebViewEventMixin:
             callback: Function to call when window is moved.
                      Data includes {x, y}.
         """
-        self.register_callback("moved", callback)
-        self.signals.moved.connect(lambda pos: callback({"x": pos[0], "y": pos[1]}))
+        conn_id = self.register_callback("moved", callback)
+        self._connect_lifecycle_signal(
+            self.signals.moved, conn_id, lambda pos: {"x": pos[0], "y": pos[1]}
+        )
         return callback
 
     def on_focused(self, callback: Callable) -> Callable:
         """Register a callback for when the window gains focus."""
-        self.register_callback("focused", callback)
-        self.signals.focused.connect(lambda: callback({}))
+        conn_id = self.register_callback("focused", callback)
+        self._connect_lifecycle_signal(self.signals.focused, conn_id, lambda: {})
         return callback
 
     def on_blurred(self, callback: Callable) -> Callable:
         """Register a callback for when the window loses focus."""
-        self.register_callback("blurred", callback)
-        self.signals.blurred.connect(lambda: callback({}))
+        conn_id = self.register_callback("blurred", callback)
+        self._connect_lifecycle_signal(self.signals.blurred, conn_id, lambda: {})
         return callback
 
     def on_minimized(self, callback: Callable) -> Callable:
         """Register a callback for when the window is minimized."""
-        self.register_callback("minimized", callback)
-        self.signals.minimized.connect(lambda: callback({}))
+        conn_id = self.register_callback("minimized", callback)
+        self._connect_lifecycle_signal(self.signals.minimized, conn_id, lambda: {})
         return callback
 
     def on_maximized(self, callback: Callable) -> Callable:
         """Register a callback for when the window is maximized."""
-        self.register_callback("maximized", callback)
-        self.signals.maximized.connect(lambda: callback({}))
+        conn_id = self.register_callback("maximized", callback)
+        self._connect_lifecycle_signal(self.signals.maximized, conn_id, lambda: {})
         return callback
 
     def on_restored(self, callback: Callable) -> Callable:
         """Register a callback for when the window is restored from minimized/maximized state."""
-        self.register_callback("restored", callback)
-        self.signals.restored.connect(lambda: callback({}))
+        conn_id = self.register_callback("restored", callback)
+        self._connect_lifecycle_signal(self.signals.restored, conn_id, lambda: {})
         return callback

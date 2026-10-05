@@ -496,12 +496,17 @@ class TestEventTimer:
         # Start timer
         timer.start()
 
-        # Stop should not raise error, just log it
-        timer.stop()  # Should not raise
-        assert timer.is_running is False
+        # Failed native teardown must remain observable and retryable.
+        with pytest.raises(RuntimeError, match="Failed to stop timer"):
+            timer.stop()
+        assert timer.is_running is True
+        assert timer._timer_handle == "mock_handle"
 
         # Backend stop was attempted
         mock_backend.stop.assert_called_once_with("mock_handle")
+        mock_backend.stop.side_effect = None
+        timer.stop()
+        assert timer.is_running is False
 
     def test_off_close_unregisters(self):
         """off_close should remove a previously registered close callback."""
