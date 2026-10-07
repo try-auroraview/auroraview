@@ -8,12 +8,17 @@ on:
       - 'tests/**'
       - 'examples/**'
       - '.github/workflows/dcc-integration.yml'
+      - 'scripts/ci/run_blender_tests.py'
+      - 'justfile'
   pull_request:
     branches: [main]
     paths:
       - 'python/**'
       - 'tests/**'
       - 'examples/**'
+      - '.github/workflows/dcc-integration.yml'
+      - 'scripts/ci/run_blender_tests.py'
+      - 'justfile'
   workflow_dispatch:
     inputs:
       dcc:
@@ -77,6 +82,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Setup vx
+        uses: loonghao/vx@3bcef20521ac4836e5e56da55c09af90f320c564 # vx-v0.9.33
+
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
@@ -88,12 +96,15 @@ jobs:
           name: dcc-test-wheel
           path: dist/
 
-      - name: Install wheel
+      - name: Prepare isolated Blender test dependencies
         run: |
-          python -m pip install --upgrade pip
           wheel_file=$(ls -t dist/*.whl | head -1)
-          echo "Installing wheel: $wheel_file"
-          pip install "$wheel_file"
+          vx just prepare-blender-test-site "$wheel_file" "$PWD/.blender-test-site" "${{ matrix.python-version }}"
+
+      - name: Install native import dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-0 libxdo3
 
       - name: Download Blender
         run: |
@@ -108,29 +119,9 @@ jobs:
         run: |
           ${{ env.BLENDER_DIR }}/blender --background --python-expr "import bpy; import sys; print('Blender version:', bpy.app.version_string); print('Python version:', sys.version)"
 
-      - name: Install test dependencies
+      - name: Run required tests inside the actual Blender process
         run: |
-          pip install pytest pytest-timeout
-
-      - name: Run Blender integration tests
-        run: |
-          ${{ env.BLENDER_DIR }}/blender --background --python-expr "
-          import subprocess, sys, os
-
-          # Ensure pytest is installed in Blender's bundled Python
-          subprocess.run([sys.executable, '-m', 'ensurepip', '--upgrade'], check=False)
-          subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', 'pytest', 'pytest-timeout'], check=False)
-
-          # Run tests
-          result = subprocess.run(
-              [sys.executable, '-m', 'pytest',
-               'tests/python/integration/test_blender_integration.py',
-               '-v', '--tb=short', '--timeout=60'],
-              env=dict(os.environ),
-              cwd=os.getcwd()
-          )
-          sys.exit(result.returncode)
-          "
+          vx just test-blender-host "$PWD/${{ env.BLENDER_DIR }}/blender" "$PWD/.blender-test-site"
 
   test-openscad:
     name: OpenSCAD

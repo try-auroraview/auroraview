@@ -204,6 +204,15 @@ ci-grep:
     @echo "[ci-grep] host-adapter contract Rust/Python capability parity guard..."
     vx python scripts/ci/check_contract_capability_parity.py
 
+# Keep Blender's test dependencies separate from the runner's Python environment.
+prepare-blender-test-site wheel site python_version:
+    vx uv pip install --target "{{site}}" --python-version "{{python_version}}" --only-binary :all: "{{wheel}}" pytest pytest-timeout pytest-asyncio
+
+# Pytest must run inside bpy; a sys.executable subprocess is an ordinary Python process.
+# The strict runner rejects missing imports, skipped cases and an empty selection.
+test-blender-host blender site:
+    "{{blender}}" --background --factory-startup --python-exit-code 1 --python scripts/ci/run_blender_tests.py -- --test-site "{{site}}" -- tests/python/integration/test_blender_integration.py -v --tb=short --timeout=60
+
 # Run all tests
 [unix]
 test:
