@@ -2167,21 +2167,22 @@ e2e-ci: e2e-install gallery-pack-debug
 # Private opt-in candidate. Does not change published Linux capabilities.
 [linux]
 build-hosted-gtk: assets-build sdk-build-assets
+    vx uv run --no-sync python scripts/ci/pin_hosted_gtk_rust.py --verify-environment
     vx uv run maturin build --features "ext-module,python-bindings,abi3-py38,experimental-hosted-gtk" --out dist/hosted-gtk
 
 [linux]
 test-hosted-gtk-queue:
-    vx cargo test --test hosted_gtk_queue --features "experimental-hosted-gtk,test-helpers"
+    vx rustup run 1.90.0 cargo test --test hosted_gtk_queue --features "experimental-hosted-gtk,test-helpers"
 
 # Process deadline makes a finalizer-reentry deadlock an observable test failure.
 [linux]
 test-hosted-gtk-source:
-    timeout 60s vx cargo test --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers"
+    timeout 60s vx rustup run 1.90.0 cargo test --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers"
 
 # CI preparation is separate from the deadlock-sensitive execution deadline.
 [linux]
 compile-hosted-gtk-source: assets-build sdk-build-assets
-    vx cargo test --no-run --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers"
+    vx rustup run 1.90.0 cargo test --no-run --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers"
 
 [linux]
 test-hosted-gtk-python-source:
@@ -2189,15 +2190,15 @@ test-hosted-gtk-python-source:
 
 [linux]
 hosted-gtk-toolchain-info:
-    vx rustc --version
-    vx cargo --version
+    vx rustup run 1.90.0 rustc --version
+    vx rustup run 1.90.0 cargo --version
     vx python --version
     vx just --version
-    vx python -c "import subprocess, sys; assert sys.version_info[:3] == (3, 11, 15); version = subprocess.check_output(['vx', 'rustc', '--version'], text=True); assert version.startswith('rustc 1.90.0 '), version"
+    vx python -c "import subprocess, sys; assert sys.version_info[:3] == (3, 11, 15); version = subprocess.check_output(['vx', 'rustup', 'run', '1.90.0', 'rustc', '--version'], text=True); assert version.startswith('rustc 1.90.0 '), version"
 
 [linux]
 test-hosted-gtk-feature-off:
-    vx cargo test --test ipc_message_queue_integration --test ipc_json_integration --test lifecycle_integration --features "test-helpers"
+    vx rustup run 1.90.0 cargo test --test ipc_message_queue_integration --test ipc_json_integration --test lifecycle_integration --features "test-helpers"
 
 [linux]
 test-hosted-gtk-python-regression:
@@ -2206,8 +2207,8 @@ test-hosted-gtk-python-regression:
 [linux]
 lint-hosted-gtk-source:
     vx just unsafe-audit
-    vx cargo fmt --all -- --check
-    vx cargo clippy --lib --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers" -- -D warnings
+    vx rustup run 1.90.0 cargo fmt --all -- --check
+    vx rustup run 1.90.0 cargo clippy --lib --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers" -- -D warnings
     vx uv run --no-sync ruff check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py
     vx uv run --no-sync ruff format --check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py
 
@@ -2227,3 +2228,8 @@ install-hosted-gtk-test-wheel:
 prepare-hosted-gtk-rust:
     vx rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
     vx rustup default 1.90.0
+
+# Pin maturin's Cargo/compiler selection as well as direct cargo recipes.
+[linux]
+pin-hosted-gtk-rust-environment:
+    vx python scripts/ci/pin_hosted_gtk_rust.py

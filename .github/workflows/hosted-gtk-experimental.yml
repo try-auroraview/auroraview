@@ -43,6 +43,7 @@ jobs:
           mkdir -p hosted-gtk-evidence
           set -o pipefail
           vx just prepare-hosted-gtk-rust 2>&1 | tee hosted-gtk-evidence/rust-selection.txt
+          vx just pin-hosted-gtk-rust-environment 2>&1 | tee hosted-gtk-evidence/rust-paths.txt
 
       - name: Record exact source and toolchain
         shell: bash
