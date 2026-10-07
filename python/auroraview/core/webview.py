@@ -148,6 +148,7 @@ class WebView(
         dcc_mode: Union[bool, str] = "auto",
         # New structured config (takes precedence if provided)
         config: Optional["WebViewConfig"] = None,
+        _native_core: Any = None,
     ) -> None:
         r"""Initialize the WebView.
 
@@ -321,7 +322,7 @@ class WebView(
                                import maya.cmds as cmds
                                return cmds.polyCube()[0]
         """
-        if _CoreWebView is None:
+        if _CoreWebView is None and _native_core is None:
             # In packed mode, _core.pyd is not needed - Python runs as API server
             if _IS_PACKED_MODE:
                 logger.info("Packed mode: _core.pyd not available, WebView will run as API server")
@@ -418,50 +419,59 @@ class WebView(
 
         # Map new parameter names to Rust core (which still uses old names)
         # In packed mode, _CoreWebView is not available - Python runs as API server
-        if _CoreWebView is not None:
-            self._core = _CoreWebView(
-                title=title,
-                width=width,
-                height=height,
-                url=url,
-                html=html,
-                dev_tools=debug,  # debug -> dev_tools
-                context_menu=context_menu,
-                resizable=resizable,
-                decorations=frame,  # frame -> decorations
-                parent_hwnd=parent,  # parent -> parent_hwnd
-                parent_mode=mode,  # mode -> parent_mode
-                asset_root=asset_root,  # Custom protocol asset root
-                data_directory=data_directory,  # User data directory (cookies, cache, etc.)
-                allow_file_protocol=allow_file_protocol,  # Enable file:// protocol
-                # RFC 0017: pass tri-state Optional[bool] through unchanged.
-                # Rust binding applies unwrap_or(false); do not collapse here.
-                capture_file_drop=capture_file_drop,
-                always_on_top=always_on_top,  # Keep window always on top
-                transparent=transparent,  # Enable transparent window
-                background_color=background_color,  # Window background color
-                auto_show=auto_show,  # Control window visibility on creation
-                ipc_batch_size=ipc_batch_size,  # Max messages per tick (0=unlimited)
-                icon=icon,  # Custom window icon path
-                tool_window=tool_window,  # Tool window style (hide from taskbar/Alt+Tab)
-                undecorated_shadow=undecorated_shadow,  # Show shadow for frameless windows
-                allow_new_window=allow_new_window,  # Allow window.open() to create new windows
-                new_window_mode=new_window_mode,  # New window behavior: deny, system_browser, child_webview
-                remote_debugging_port=remote_debugging_port,  # CDP remote debugging port
-                splash_overlay=splash_overlay,  # Show splash overlay while loading
-                allow_downloads=allow_downloads,  # Enable file downloads
-                download_prompt=download_prompt,  # Show "Save As" dialog for downloads
-                download_directory=download_directory,  # Default download directory
-                proxy_url=proxy_url,  # Proxy server URL
-                user_agent=user_agent,  # Custom User-Agent string
-            )
+        self._core_factory = type(_native_core) if _native_core is not None else _CoreWebView
+        self._core_kwargs = {
+            "title": title,
+            "width": width,
+            "height": height,
+            "url": url,
+            "html": html,
+            "dev_tools": debug,
+            "context_menu": context_menu,
+            "resizable": resizable,
+            "decorations": frame,
+            "parent_hwnd": parent,
+            "parent_mode": mode,
+            "asset_root": asset_root,
+            "data_directory": data_directory,
+            "allow_file_protocol": allow_file_protocol,
+            # RFC 0017: pass tri-state Optional[bool] through unchanged.
+            # Rust binding applies unwrap_or(false); do not collapse here.
+            "capture_file_drop": capture_file_drop,
+            "always_on_top": always_on_top,
+            "transparent": transparent,
+            "background_color": background_color,
+            "auto_show": auto_show,
+            "ipc_batch_size": ipc_batch_size,
+            "icon": icon,
+            "tool_window": tool_window,
+            "undecorated_shadow": undecorated_shadow,
+            "allow_new_window": allow_new_window,
+            "new_window_mode": new_window_mode,
+            "remote_debugging_port": remote_debugging_port,
+            "splash_overlay": splash_overlay,
+            "allow_downloads": allow_downloads,
+            "download_prompt": download_prompt,
+            "download_directory": download_directory,
+            "proxy_url": proxy_url,
+            "user_agent": user_agent,
+        }
+        if _native_core is not None:
+            self._core = _native_core
+        elif _CoreWebView is not None:
+            self._core = self._core_factory(**self._core_kwargs)
         else:
             self._core = None  # Packed mode: no Rust core needed
+        # Preserve native smart-show detection without querying a foreign core.
+        self._is_embedded = _native_core is not None or bool(
+            getattr(self._core, "_is_embedded", False)
+        )
 
         # Record which thread owns each Rust core so a later close() raised on
         # another thread can be routed through the close channel instead of
         # touching the unsendable object directly.
         self._core_threads: Dict[int, int] = {}
+        self._core_proxies: Dict[int, Any] = {}
         self._track_core_thread(self._core)
 
         self._event_handlers: Dict[str, List[Callable]] = {}
@@ -469,6 +479,8 @@ class WebView(
         self._title = title
         self._width = width
         self._height = height
+        self._x = 0
+        self._y = 0
         self._debug = debug
         self._resizable = resizable
         self._frame = frame
@@ -497,7 +509,7 @@ class WebView(
         else:
             self._dcc_mode = bool(dcc_mode)
         self._show_thread: Optional[threading.Thread] = None
-        self._is_running = False
+        self._is_running = _native_core is not None
         self._auto_timer = None  # Will be set by create() factory method
         self._auto_show = auto_show  # Store auto_show setting
         # Store content for async mode (use passed-in values)
@@ -514,6 +526,19 @@ class WebView(
 
         # Close requested flag (used to coordinate background-thread WebView lifecycle)
         self._close_requested = False
+        self._native_close_observed = False
+        self._lifecycle_lock = threading.RLock()
+        self._closed_event = threading.Event()
+        if not self._is_running:
+            self._closed_event.set()  # There is no running event loop yet.
+        self._close_sent = set()
+        self._close_pending = {}
+        self._close_send_done = threading.Event()
+        self._close_send_done.set()
+        self._host_cleanup_done = threading.Event()
+        self._host_cleanup_done.set()
+        self._timer_cleanup_pending = False
+        self._startup_error: Optional[Exception] = None
 
         # Event processor (strategy pattern for UI framework integration)
         self._event_processor: Optional[Any] = None
@@ -571,6 +596,49 @@ class WebView(
 
         # Initialize auto-telemetry (after WindowManager registration)
         self._init_telemetry()
+
+    def _init_embedded_core(
+        self,
+        core: Any,
+        *,
+        parent_hwnd: int,
+        title: str,
+        width: int,
+        height: int,
+        url: Optional[str],
+        html: Optional[str],
+        asset_root: Optional[str],
+        debug: bool,
+    ) -> None:
+        """Initialize both legacy __new__ factories through the normal bootstrap.
+
+        The supplied native core is already live on this thread. It must not be
+        constructed again, but needs every normal Python registry and lifecycle
+        field, including future additions to the standard constructor.
+        """
+        WebView.__init__(
+            self,
+            title=title,
+            width=width,
+            height=height,
+            parent=parent_hwnd,
+            mode="child",
+            url=url,
+            html=html,
+            asset_root=asset_root,
+            debug=debug,
+            auto_show=False,
+            _native_core=core,
+        )
+        self._config = {
+            "title": title,
+            "width": width,
+            "height": height,
+            "url": url,
+            "html": html,
+            "asset_root": asset_root,
+            "debug": debug,
+        }
 
     def set_event_processor(self, processor: Any) -> None:
         """Set event processor (strategy pattern for UI framework integration).
@@ -685,13 +753,19 @@ class WebView(
             logger.debug("Skipping _auto_process_events - in blocking event loop")
             return
 
+        if self._show_thread is not None:
+            return
+        core = self._get_active_core()
+        if core is None or not self._is_core_owner(core):
+            return
+
         try:
             if self._event_processor is not None:
                 # Use strategy pattern: delegate to event processor
                 self._event_processor.process()
             else:
                 # Default implementation: direct Rust call
-                self._core.process_events()
+                core.process_events()
         except Exception as e:
             logger.debug(f"Auto process events failed (non-critical): {e}")
 
@@ -727,7 +801,13 @@ class WebView(
             core = self._async_core if self._async_core is not None else self._core
         if core is None:
             return False
-        return core.process_events()
+        if not self._is_core_owner(core):
+            return False  # The owner loop drains its own queue.
+        should_close = core.process_events()
+        if should_close:
+            self._observe_native_close()
+            self.request_close()
+        return should_close
 
     def process_events_ipc_only(self) -> bool:
         """Process only internal AuroraView IPC without touching host event loop.
@@ -748,7 +828,13 @@ class WebView(
             core = self._async_core if self._async_core is not None else self._core
         if core is None:
             return False
-        return core.process_ipc_only()
+        if not self._is_core_owner(core):
+            return False
+        should_close = core.process_ipc_only()
+        if should_close:
+            self._observe_native_close()
+            self.request_close()
+        return should_close
 
     def is_alive(self) -> bool:
         """Check if WebView is still running.
@@ -804,7 +890,10 @@ class WebView(
         # Fall back to Rust core (only works if called from the same thread)
         # This is for blocking mode or when called from the background thread
         try:
-            return self._core.get_hwnd()
+            core = self._get_active_core()
+            if core is not None and self._is_core_owner(core):
+                return core.get_hwnd()
+            return None
         except Exception:
             # In non-blocking mode, _core.get_hwnd() may fail due to thread safety
             return None
@@ -845,10 +934,7 @@ class WebView(
             The proxy uses a message queue internally. Operations are queued
             and processed by the WebView's event loop on the correct thread.
         """
-        # Use async core if available (when running in background thread)
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
-        return core.get_proxy()
+        return WebViewJSMixin.get_proxy(self)
 
     def create_emitter(self) -> Any:
         """Create a thread-safe event emitter.
@@ -876,7 +962,11 @@ class WebView(
             >>> # - process:stderr - { pid, data }
             >>> # - process:exit - { pid, code }
         """
-        return self._core.create_emitter()
+        core = self._get_active_core()
+        emitter = getattr(self, "_core_emitters", {}).get(id(core))
+        if emitter is None:
+            raise RuntimeError("WebView has no cached thread-safe EventEmitter")
+        return emitter
 
     def thread_safe(self) -> Any:
         """Get a thread-safe wrapper for cross-thread operations.
@@ -971,12 +1061,12 @@ class WebView(
     @property
     def title(self) -> str:
         """Get the window title."""
-        return self._core.title
+        return self._title
 
     @title.setter
     def title(self, value: str) -> None:
         """Set the window title."""
-        self._core.set_title(value)
+        self._window_command("set_title", value)
         self._title = value
 
     def __repr__(self) -> str:

@@ -55,10 +55,7 @@ class WebViewJSMixin:
         t0 = time.monotonic()
 
         # Use the async core if available (when running in background thread)
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
-
-        core.eval_js(script)
+        self._command_target().eval_js(script)
 
         # Auto-telemetry: record JS eval duration
         dt = (time.monotonic() - t0) * 1000.0
@@ -103,10 +100,7 @@ class WebViewJSMixin:
         # The callback_id pattern is reserved for future async bridge support.
 
         try:
-            with self._async_core_lock:
-                core = self._async_core if self._async_core is not None else self._core
-
-            core.eval_js(script)
+            self._command_target().eval_js(script)
 
             if callback:
                 callback(None, None)
@@ -146,8 +140,9 @@ class WebViewJSMixin:
         """
         logger.debug(f"Executing JavaScript awaitable: {script[:100]}...")
 
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
+        # Result polling is not exposed by WebViewProxy. Reject cross-thread
+        # use explicitly rather than entering an unsendable native object.
+        core = self._require_owner_core("eval_js_awaitable")
 
         # Check if core supports eval_js_future
         if not hasattr(core, "eval_js_future"):
@@ -220,9 +215,11 @@ class WebViewJSMixin:
             and processed by the WebView's event loop on the correct thread.
         """
         # Use async core if available (when running in background thread)
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
-        return core.get_proxy()
+        core = self._get_active_core()
+        proxy = getattr(self, "_core_proxies", {}).get(id(core))
+        if proxy is None:
+            raise RuntimeError("WebView has no cached cross-thread command proxy")
+        return proxy
 
     def _auto_process_events(self) -> None:
         """Automatically process events after emit() or eval_js().
@@ -237,10 +234,16 @@ class WebViewJSMixin:
             logger.debug("Skipping _auto_process_events - in blocking event loop")
             return
 
+        if getattr(self, "_show_thread", None) is not None:
+            return
+        core = self._get_active_core()
+        if core is None or not self._is_core_owner(core):
+            return
+
         try:
             if self._event_processor is not None:
                 self._event_processor.process()
             else:
-                self._core.process_events()
+                core.process_events()
         except Exception as e:
             logger.debug(f"Auto process events failed (non-critical): {e}")

@@ -54,12 +54,13 @@ class WebViewContentMixin:
             self._telemetry_on_navigate(url)
 
         # Use the async core if available (when running in background thread)
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
-        core.load_url(url)
+        self._command_target().load_url(url)
 
     def get_current_url(self) -> Optional[str]:
         """Get the current URL of the WebView.
+
+        From a foreign thread, returns the last URL requested through this
+        wrapper; the send-safe proxy does not expose native URL queries.
 
         Returns:
             The current URL, or None if not available
@@ -69,8 +70,9 @@ class WebViewContentMixin:
             >>> print(f"Current URL: {url}")
         """
         # Use the async core if available
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
+        core = self._get_active_core()
+        if core is None or not self._is_core_owner(core):
+            return self._stored_url
 
         # Try to get from Rust core first
         if hasattr(core, "get_current_url"):
@@ -100,9 +102,7 @@ class WebViewContentMixin:
             self._telemetry_on_navigate("about:blank (inline HTML)")
 
         # Use the async core if available (when running in background thread)
-        with self._async_core_lock:
-            core = self._async_core if self._async_core is not None else self._core
-        core.load_html(html)
+        self._command_target().load_html(html)
 
     def load_file(self, path: Union[str, Path]) -> None:
         """Load a local HTML file via a ``file://`` URL.
