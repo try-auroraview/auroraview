@@ -49,8 +49,12 @@ def unregister_tools(adapter):
 插件的
 [消费者指南](https://github.com/try-auroraview/auroraview-blender/blob/main/docs/consumer-tools.md)
 通过 `BlenderSession.open(..., configure=configure)`，在显示 WebView 之前绑定
-公开 Core API。会话安装延迟主线程调用调度器；JavaScript Promise 和 RPC 协议
-仍由 Core 管理。
+公开 Core API。会话通过 `set_call_dispatcher` 和 `set_event_dispatcher`，
+将调用与事件通知送入同一个有界主线程队列；JavaScript Promise 和 RPC 协议仍由 Core 管理。
+通过 `on`/`register_callback` 注册的通知立即返回，忽略回调返回值；此模式明确拒绝
+同步 `closing` 否决回调。原始 signal 连接直接执行，不获得宿主调度保证。
+
+关闭、断开连接和替换调度器会使排队通知失效，包括 `closed`；清理由插件和会话生命周期负责。
 
 该路径需要
 [Core PR #497](https://github.com/try-auroraview/auroraview/pull/497)

@@ -55,8 +55,15 @@ is disabled; the adapter also tracks its registered panels for cleanup.
 The add-on's
 [consumer guide](https://github.com/try-auroraview/auroraview-blender/blob/main/docs/consumer-tools.md)
 uses `BlenderSession.open(..., configure=configure)` to bind public Core calls
-before showing a WebView. The session installs a deferred main-thread call
-dispatcher; Core retains the JavaScript Promise and RPC protocol.
+before showing a WebView. The session installs `set_call_dispatcher` and
+`set_event_dispatcher` on one bounded main-thread queue; Core retains the
+JavaScript Promise and RPC protocol. Event notifications registered with
+`on`/`register_callback` return immediately and ignore callback return values.
+Synchronous `closing` veto registrations are refused in this mode. Raw signal
+connections are direct and do not acquire host dispatch guarantees.
+
+Close, disconnect and dispatcher replacement invalidate queued notifications,
+including `closed`; own cleanup through the add-on/session lifecycle.
 
 This route requires the owner-thread RPC/lifecycle contract tracked in
 [Core PR #497](https://github.com/try-auroraview/auroraview/pull/497).
