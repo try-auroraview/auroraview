@@ -59,6 +59,46 @@ class WebViewEventMixin:
         """Initialize the signal system. Called during WebView initialization."""
         self._signals = WebViewSignals()
 
+    def set_event_dispatcher(
+        self, dispatcher: Optional[Callable[[Callable[[], None]], None]]
+    ) -> None:
+        """Route non-veto events through the host's asynchronous owner queue.
+
+        Configure this on the wrapper's creating thread. The dispatcher must
+        enqueue a zero-argument callback on that thread and return without
+        waiting. Callback return values are ignored. ``closing`` callbacks
+        require a synchronous veto result and cannot use this route: remove
+        them before configuring a dispatcher, or registration is refused.
+
+        Existing event registrations, including internal ready callbacks, use
+        the new route. Replacing or disabling it invalidates already queued
+        deliveries. Passing ``None`` restores the legacy DCC dispatch behavior.
+        Closing or disconnecting still invalidates pending callbacks; this
+        queue is not a guaranteed teardown-notification channel.
+        """
+        if dispatcher is not None and not callable(dispatcher):
+            raise TypeError("Event dispatcher must be callable or None")
+        with self._event_handlers_lock:
+            self._check_open()
+            if getattr(self, "_events_closed", False):
+                raise RuntimeError("WebView event callbacks are closed")
+            owner = getattr(self, "_event_dispatch_owner", None)
+            if owner is None:
+                core = getattr(self, "_core", None)
+                owner = getattr(self, "_core_threads", {}).get(id(core), threading.get_ident())
+            if owner != threading.get_ident():
+                raise RuntimeError("Configure event dispatch on the wrapper's creating thread")
+            if dispatcher is not None and any(
+                name == "closing" and active[0]
+                for name, _callback, active in getattr(self, "_event_connections", {}).values()
+            ):
+                raise RuntimeError(
+                    "Remove synchronous closing callbacks before host event dispatch"
+                )
+            self._event_dispatcher = dispatcher
+            self._event_dispatch_owner = owner
+            self._event_dispatch_generation = getattr(self, "_event_dispatch_generation", 0) + 1
+
     @property
     def signals(self) -> WebViewSignals:
         """Get the WebView signals for Qt-style event handling.
@@ -261,13 +301,47 @@ class WebViewEventMixin:
                     return None
             return user_callback(*args, **kwargs)
 
-        callback = invoke
-        # Auto-wrap callback for DCC thread safety if dcc_mode is enabled
-        if getattr(self, "_dcc_mode", False):
-            from auroraview.utils.thread_dispatcher import wrap_callback_for_dcc
+        def route(*args: Any, **kwargs: Any) -> Any:
+            with self._event_handlers_lock:
+                if not active[0] or getattr(self, "_events_closed", False):
+                    return None
+                dispatcher = getattr(self, "_event_dispatcher", None)
+                dispatch_generation = getattr(self, "_event_dispatch_generation", 0)
+                owner = getattr(self, "_event_dispatch_owner", None)
+            started = False
+            cancelled = False
 
-            callback = wrap_callback_for_dcc(callback)
-            logger.debug(f"Wrapped callback for DCC thread safety: {event_str}")
+            def deliver() -> Any:
+                nonlocal started, cancelled
+                with self._event_handlers_lock:
+                    if (
+                        started
+                        or cancelled
+                        or dispatch_generation != getattr(self, "_event_dispatch_generation", 0)
+                    ):
+                        return None
+                    if dispatcher is not None and threading.get_ident() != owner:
+                        cancelled = True
+                        raise RuntimeError("Host event dispatcher must execute on its owner thread")
+                    started = True
+                return invoke(*args, **kwargs)
+
+            if dispatcher is not None:
+                try:
+                    dispatcher(deliver)
+                except Exception:
+                    # An enqueue-then-fail scheduler must not mutate the host
+                    # later through a callback it reported as rejected.
+                    cancelled = True
+                    raise
+                return None
+            if getattr(self, "_dcc_mode", False):
+                from auroraview.utils.thread_dispatcher import wrap_callback_for_dcc
+
+                return wrap_callback_for_dcc(deliver)()
+            return deliver()
+
+        callback = route
 
         # Register with legacy event handlers dict (for backward compatibility)
         # Use lock to protect concurrent access from background threads.
@@ -275,6 +349,10 @@ class WebViewEventMixin:
             self._check_open()
             if getattr(self, "_events_closed", False):
                 raise RuntimeError("WebView event callbacks are closed")
+            if event_str == "closing" and getattr(self, "_event_dispatcher", None) is not None:
+                raise RuntimeError(
+                    "Synchronous closing veto callbacks cannot use host event dispatch"
+                )
             if event_str not in self._event_handlers:
                 self._event_handlers[event_str] = []
             self._event_handlers[event_str].append(callback)
