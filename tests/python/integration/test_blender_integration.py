@@ -1,72 +1,58 @@
-"""Blender integration tests for AuroraView.
-
-Tests AuroraView functionality within Blender environment.
-"""
+"""Headless import and host checks; no visible WebView rendering is certified."""
 
 import pytest
 
 
-@pytest.mark.blender
-def test_blender_import():
-    """Test that AuroraView can be imported in Blender."""
-    try:
-        import bpy  # noqa: F401
-
-        from auroraview import WebView
-
-        assert WebView is not None
-    except ImportError:
-        pytest.skip("Blender not available")
+@pytest.fixture(scope="module")
+def blender():
+    """Ordinary Python suites may skip; the dedicated host runner forbids skips."""
+    return pytest.importorskip("bpy", reason="Requires the actual Blender process")
 
 
 @pytest.mark.blender
-def test_blender_webview_creation():
-    """Test creating WebView in Blender environment."""
+def test_blender_import(blender):
+    """A missing Core or native dependency in a real host is a test failure."""
+    from auroraview import WebView
+
+    assert blender.app.version_string
+    assert WebView is not None
+
+
+@pytest.mark.blender
+def test_blender_webview_creation(blender):
+    """Construct and close the wrapper without showing a native window."""
+    from auroraview import WebView
+
+    view = WebView(title="Blender Test", width=800, height=600)
     try:
-        import bpy  # noqa: F401
-
-        from auroraview import WebView
-
-        # Create WebView without showing (headless test)
-        view = WebView(title="Blender Test", width=800, height=600)
-        assert view is not None
         assert view.title == "Blender Test"
-    except ImportError:
-        pytest.skip("Blender not available")
+    finally:
+        view.close()
 
 
 @pytest.mark.blender
-def test_blender_operator_registration():
-    """Test that AuroraView operators can be registered in Blender."""
+def test_blender_operator_registration(blender):
+    """Register a real temporary operator and always restore the host registry."""
+
+    class AURORAVIEW_OT_ci_probe(blender.types.Operator):
+        bl_idname = "auroraview.ci_probe"
+        bl_label = "AuroraView CI host probe"
+
+        def execute(self, context):
+            return {"FINISHED"}
+
+    blender.utils.register_class(AURORAVIEW_OT_ci_probe)
     try:
-        import bpy  # noqa: F401
-
-        from auroraview import WebView
-
-        # Test that we can create a function that would be called from Blender
-        def show_auroraview():
-            view = WebView(title="Test from Blender")
-            view.show()
-
-        assert callable(show_auroraview)
-    except ImportError:
-        pytest.skip("Blender not available")
+        assert blender.ops.auroraview.ci_probe() == {"FINISHED"}
+    finally:
+        blender.utils.unregister_class(AURORAVIEW_OT_ci_probe)
 
 
 @pytest.mark.blender
-def test_blender_dcc_environment():
-    """Test DCC environment detection in Blender."""
-    try:
-        import bpy  # noqa: F401
+def test_blender_dcc_environment(blender):
+    """Do not turn a missing public dispatcher API into a passing skip."""
+    from auroraview.utils.thread_dispatcher import get_current_dcc_name
 
-        from auroraview.utils.thread_dispatcher import get_current_dcc_name
-
-        dcc_name = get_current_dcc_name()
-        assert dcc_name is not None
-        assert "blender" in dcc_name.lower()
-    except (ImportError, AttributeError):
-        pytest.skip("Blender not available or function not implemented")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    dcc_name = get_current_dcc_name()
+    assert dcc_name is not None
+    assert "blender" in dcc_name.lower()
