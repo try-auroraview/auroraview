@@ -75,6 +75,7 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
+        bash scripts/ci/configure_apt.sh
         sudo apt-get update
         sudo apt-get install -y \
           libwebkit2gtk-4.1-dev \
