@@ -37,20 +37,21 @@ jobs:
           # ci-install would build the project during uv sync, before assets.
           install-dependencies: 'false'
 
-      - name: Select the exact compiler in the vx-managed Rust home
+      - name: Select Rust 1.90.0 for the production wheel and source format
         shell: bash
         run: |
           mkdir -p hosted-gtk-evidence
           set -o pipefail
-          vx just prepare-hosted-gtk-rust 2>&1 | tee hosted-gtk-evidence/rust-selection.txt
-          vx just pin-hosted-gtk-rust-environment 2>&1 | tee hosted-gtk-evidence/rust-paths.txt
+          vx just prepare-hosted-gtk-rust 2>&1 | tee hosted-gtk-evidence/rust-selection-production.txt
+          vx just pin-hosted-gtk-rust-environment production 2>&1 | tee hosted-gtk-evidence/rust-paths-production.txt
 
-      - name: Record exact source and toolchain
+      - name: Record exact source and production toolchain
         shell: bash
         run: |
           mkdir -p hosted-gtk-evidence
+          set -o pipefail
           git rev-parse HEAD | tee hosted-gtk-evidence/source.txt
-          vx just hosted-gtk-toolchain-info | tee hosted-gtk-evidence/toolchain.txt
+          vx just hosted-gtk-toolchain-info production 2>&1 | tee hosted-gtk-evidence/toolchain-production.txt
 
       - name: Install test dependencies without an implicit project build
         shell: bash
@@ -64,6 +65,36 @@ jobs:
           set -o pipefail
           vx just test-hosted-gtk-python-source 2>&1 | tee hosted-gtk-evidence/python-source.txt
 
+      - name: Build the opt-in hosted GTK wheel with production Rust 1.90.0
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf dist/hosted-gtk
+          vx just verify-hosted-gtk-wheel-environment 2>&1 | tee hosted-gtk-evidence/wheel-environment.txt
+          vx just build-hosted-gtk 2>&1 | tee hosted-gtk-evidence/wheel-build.txt
+          sha256sum dist/hosted-gtk/*.whl | tee hosted-gtk-evidence/wheels.sha256
+
+      - name: Check source formatting with production Rust 1.90.0
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just format-check-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/format.txt
+
+      # The root dev-dependency auroraview-mcp pulls dcc-mcp-protocols 0.15,
+      # which requires Rust 1.95. This lane does not change the source MSRV.
+      - name: Select Rust 1.95.0 for development test and clippy targets
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just prepare-hosted-gtk-test-rust 2>&1 | tee hosted-gtk-evidence/rust-selection-development.txt
+          vx just pin-hosted-gtk-rust-environment development 2>&1 | tee hosted-gtk-evidence/rust-paths-development.txt
+
+      - name: Record the exact development toolchain
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just hosted-gtk-toolchain-info development 2>&1 | tee hosted-gtk-evidence/toolchain-development.txt
+
       - name: Compile hosted Rust test targets without execution deadline
         shell: bash
         run: |
@@ -75,14 +106,6 @@ jobs:
         run: |
           set -o pipefail
           vx just test-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/hosted-tests.txt
-
-      - name: Build the opt-in hosted GTK wheel
-        shell: bash
-        run: |
-          set -o pipefail
-          rm -rf dist/hosted-gtk
-          vx just build-hosted-gtk 2>&1 | tee hosted-gtk-evidence/wheel-build.txt
-          sha256sum dist/hosted-gtk/*.whl | tee hosted-gtk-evidence/wheels.sha256
 
       - name: Compile and run affected contracts with hosted GTK disabled
         shell: bash
@@ -102,7 +125,7 @@ jobs:
           set -o pipefail
           vx just test-hosted-gtk-python-regression 2>&1 | tee hosted-gtk-evidence/python-regression.txt
 
-      - name: Audit format, unsafe boundaries and hosted clippy
+      - name: Audit unsafe boundaries and hosted development clippy
         shell: bash
         run: |
           set -o pipefail
@@ -122,6 +145,9 @@ jobs:
           cp uv.lock hosted-gtk-evidence/uv.lock
           sha256sum uv.lock > hosted-gtk-evidence/uv.lock.sha256
           printf '%s\n' \
+            'Production wheel and source format compiler: Rust 1.90.0.' \
+            'Development test/clippy compiler: Rust 1.95.0 for existing dev-dependencies.' \
+            'Lane selection alone does not prove the wheel or tests completed; inspect step logs.' \
             'Native Blender/WebKit rendering: not run in this job.' \
             'Native desktop acceptance and rendering evidence remain required.' \
             'An uploaded experimental wheel is not a release or support claim.' \
