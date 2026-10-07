@@ -2209,9 +2209,10 @@ hosted-gtk-toolchain-info lane="production":
 test-hosted-gtk-feature-off:
     vx rustup run 1.95.0 cargo test --test ipc_message_queue_integration --test ipc_json_integration --test lifecycle_integration --features "test-helpers"
 
+# This focused suite has no Qt fixtures; keep other pytest plugins enabled.
 [linux]
 test-hosted-gtk-python-regression:
-    vx uv run --no-sync pytest tests/hosted_gtk_source/test_close_admission.py tests/python/unit/test_api_binding.py tests/python/unit/test_host_rpc_dispatch.py tests/python/unit/test_webview_close.py tests/python/unit/test_webview_host_lifecycle.py tests/python/unit/test_lifecycle_dispatch.py tests/python/unit/test_event_cancellation.py -v --tb=short --timeout=60 --junitxml=hosted-gtk-evidence/python-regression.xml
+    vx uv run --no-sync pytest -p no:pytest-qt tests/hosted_gtk_source/test_close_admission.py tests/python/unit/test_api_binding.py tests/python/unit/test_host_rpc_dispatch.py tests/python/unit/test_webview_close.py tests/python/unit/test_webview_host_lifecycle.py tests/python/unit/test_lifecycle_dispatch.py tests/python/unit/test_event_cancellation.py -v --tb=short --timeout=60 --junitxml=hosted-gtk-evidence/python-regression.xml
 
 [linux]
 lint-hosted-gtk-source:
