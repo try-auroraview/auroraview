@@ -156,9 +156,11 @@ class Signal(Generic[T]):
             Number of handlers that were disconnected
         """
         with self._lock:
-            count = len(self._handlers)
-            self._handlers.clear()
+            detached = self._handlers
+            self._handlers = {}
             self._once_handlers.clear()
+        count = len(detached)
+        detached.clear()  # Callable finalizers may reconnect or inspect this signal.
         logger.debug(f"[Signal:{self._name}] Disconnected all ({count} handlers)")
         return count
 

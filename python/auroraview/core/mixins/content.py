@@ -45,6 +45,8 @@ class WebViewContentMixin:
         Example:
             >>> webview.load_url("https://example.com")
         """
+        if getattr(self, "_host_runtime", None) is not None:
+            raise RuntimeError("Hosted GTK is single-document; create a fresh view to navigate")
         logger.info(f"Loading URL: {url}")
         self._stored_url = url
         self._stored_html = None
@@ -93,6 +95,8 @@ class WebViewContentMixin:
         Example:
             >>> webview.load_html("<h1>Hello, World!</h1>")
         """
+        if getattr(self, "_host_runtime", None) is not None:
+            raise RuntimeError("Hosted GTK is single-document; create a fresh view to navigate")
         logger.info(f"Loading HTML ({len(html)} bytes)")
         self._stored_html = html
         self._stored_url = None

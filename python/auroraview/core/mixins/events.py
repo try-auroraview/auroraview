@@ -252,8 +252,10 @@ class WebViewEventMixin:
 
         def invoke(*args: Any, **kwargs: Any) -> Any:
             with self._event_handlers_lock:
+                gate = getattr(self, "_host_callback_gate", None)
                 if (
                     not active[0]
+                    or (gate is not None and not gate())
                     or getattr(self, "_events_closed", False)
                     or getattr(self, "_close_requested", False)
                     or generation != getattr(self, "_event_generation", 0)
@@ -290,7 +292,8 @@ class WebViewEventMixin:
             self._register_native_event(core, event_str)
         else:
             logger.debug(
-                f"Skipped core registration for event {event_str} (packed mode or core not available)"
+                f"Skipped core registration for event {event_str} "
+                "(packed mode or core not available)"
             )
 
         return conn_id
@@ -354,18 +357,31 @@ class WebViewEventMixin:
                 removed = True
         return self.signals.custom.disconnect(event_str, conn_id) or removed
 
-    def _cancel_event_callbacks(self) -> None:
-        """Invalidate queued host callbacks and release both Python registries."""
+    def _detach_event_callbacks(self) -> Any:
+        """Publish rejection and detach ownership without dropping callables."""
         lock = getattr(self, "_event_handlers_lock", None)
         if lock is None:
-            return
+            self._events_closed = True
+            return None
         with lock:
             self._events_closed = True
             self._event_generation = getattr(self, "_event_generation", 0) + 1
-            for _name, _callback, active in getattr(self, "_event_connections", {}).values():
+            connections = getattr(self, "_event_connections", {})
+            handlers = self._event_handlers
+            for _name, _callback, active in connections.values():
                 active[0] = False
             self._event_connections = {}
-            self._event_handlers.clear()
+            self._event_handlers = {}
+        return connections, handlers
+
+    def _cancel_event_callbacks(self) -> None:
+        """Invalidate and release events outside bookkeeping locks."""
+        detached = self._detach_event_callbacks()
+        self._release_event_callbacks()
+        del detached
+
+    def _release_event_callbacks(self) -> None:
+        """Release signal ownership only after every lifecycle gate is closed."""
         signals = getattr(self, "_signals", None)
         if signals is not None:
             signals.disconnect_all()

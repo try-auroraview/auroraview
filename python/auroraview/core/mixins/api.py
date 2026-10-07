@@ -156,28 +156,40 @@ class WebViewApiMixin:
                     core.register_protocol(scheme, handler)
                     protocols[scheme] = handler
 
-    def _cancel_pending_calls(self, reason: str) -> None:
-        """Invalidate queued calls before closing the native result channel.
+    def _call_channel_open(self) -> bool:
+        """Read Python close state and the owner-captured send-safe native gate."""
+        if getattr(self, "_close_requested", False):
+            return False
+        gate = getattr(self, "_host_callback_gate", None)
+        return gate is None or gate()
 
-        Already-running Python functions cannot be interrupted, but their late
-        results are discarded. Callbacks that have not started become no-ops.
-        A closed WebView cannot accept more calls; create a new instance instead.
-        """
+    def _close_call_admission(self, reason: str) -> Dict[object, Any]:
+        """Publish cancellation and detach IDs without releasing them under locks."""
         self._ensure_api_registry()
         with self._call_lock:
             self._call_generation += 1
             self._calls_closed_reason = reason
-            calls = list(self._pending_calls.values())
-            self._pending_calls.clear()
-            for call_id in calls:
-                if call_id:
-                    self._dispatch_call_result(
-                        {
-                            "id": call_id,
-                            "ok": False,
-                            "error": {"name": "CancelledError", "message": reason},
-                        }
-                    )
+            detached = self._pending_calls
+            self._pending_calls = {}
+        return detached
+
+    def _cancel_pending_calls(self, reason: str) -> None:
+        """Cancel queued calls; notify only while the result channel stays open.
+
+        Already-accepted Python functions cannot be interrupted, but late results
+        are discarded. Lifecycle close uses the detached IDs and a captured proxy
+        for best-effort cancellation, without reopening normal result admission.
+        """
+        calls = self._close_call_admission(reason)
+        for call_id in calls.values():
+            if call_id:
+                self._dispatch_call_result(
+                    {
+                        "id": call_id,
+                        "ok": False,
+                        "error": {"name": "CancelledError", "message": reason},
+                    }
+                )
 
     def _set_loaded(self, loaded: bool = True) -> None:
         """Set the page loaded state.
@@ -265,6 +277,8 @@ class WebViewApiMixin:
         event bridge does not reliably dispatch DOM CustomEvents.
         Uses window.auroraview.trigger() for consistent event handling.
         """
+        if not self._call_channel_open():
+            return
         try:
             json_str = json.dumps(payload)
         except Exception as exc:  # pragma: no cover
@@ -289,6 +303,8 @@ class WebViewApiMixin:
 
     def _dispatch_call_result(self, payload: Dict[str, Any]) -> None:
         """Dispatch call result to JS with emit-first, eval_js fallback."""
+        if not self._call_channel_open():
+            return
         try:
             self.emit("__auroraview_call_result", payload)
             return
@@ -491,30 +507,36 @@ class WebViewApiMixin:
             host_backend = None
 
             with self._call_lock:
-                if self._calls_closed_reason is not None:
-                    if call_id:
-                        self._dispatch_call_result(
-                            {
-                                "id": call_id,
-                                "ok": False,
-                                "error": {
-                                    "name": "CancelledError",
-                                    "message": self._calls_closed_reason,
-                                },
-                            }
-                        )
+                if not self._call_channel_open():
                     return
-                generation = self._call_generation
-                self._pending_calls[token] = call_id
-                dispatcher = self._call_dispatcher
+                closed_reason = self._calls_closed_reason
+                if closed_reason is None:
+                    generation = self._call_generation
+                    self._pending_calls[token] = call_id
+                    dispatcher = self._call_dispatcher
+            if closed_reason is not None:
+                if call_id:
+                    self._dispatch_call_result(
+                        {
+                            "id": call_id,
+                            "ok": False,
+                            "error": {"name": "CancelledError", "message": closed_reason},
+                        }
+                    )
+                return
 
             def _finish(payload: Dict[str, Any]) -> None:
                 with self._call_lock:
+                    if not self._call_channel_open():
+                        self._pending_calls.pop(token, None)
+                        return
                     if generation != self._call_generation or token not in self._pending_calls:
                         return
                     del self._pending_calls[token]
-                    if call_id:
-                        self._dispatch_call_result(payload)
+                # emit hooks may close the view and release user callables.
+                # Do not retain the call lock across that reentrant boundary.
+                if call_id:
+                    self._dispatch_call_result(payload)
 
             def _error(exc: Exception) -> Dict[str, Any]:
                 return {
@@ -528,6 +550,7 @@ class WebViewApiMixin:
                 with self._call_lock:
                     if (
                         started
+                        or not self._call_channel_open()
                         or generation != self._call_generation
                         or token not in self._pending_calls
                     ):

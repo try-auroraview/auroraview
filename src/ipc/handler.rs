@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use pyo3::prelude::*;
 #[cfg(feature = "python-bindings")]
 use pyo3::{Py, PyAny};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // Re-export IpcMessage from backend module
 pub use super::backend::IpcMessage;
@@ -63,15 +63,17 @@ impl PythonCallback {
 
 /// IPC handler for managing communication between Python and JavaScript
 ///
-/// Uses DashMap for lock-free concurrent callback storage, improving
-/// performance in high-throughput scenarios.
+/// Uses sharded callback storage with explicit admission and ownership transfer.
+/// Application callbacks and finalizers run without map or admission locks.
 pub struct IpcHandler {
-    /// Registered event callbacks (Rust closures) - lock-free concurrent map
+    /// Serializes registration versus detachment; never held while invoking/dropping callbacks.
+    admission_closed: Mutex<bool>,
+    /// Registered event callbacks (Rust closures) - sharded concurrent map
     callbacks: Arc<DashMap<String, Vec<IpcCallback>>>,
 
-    /// Registered Python callbacks - lock-free concurrent map
+    /// Registered Python callbacks - sharded concurrent map
     #[cfg(feature = "python-bindings")]
-    python_callbacks: Arc<DashMap<String, Vec<PythonCallback>>>,
+    python_callbacks: Arc<DashMap<String, Vec<Arc<PythonCallback>>>>,
 
     /// JavaScript callback manager for async execution results
     #[cfg(feature = "python-bindings")]
@@ -85,6 +87,7 @@ impl IpcHandler {
     /// Create a new IPC handler
     pub fn new() -> Self {
         Self {
+            admission_closed: Mutex::new(false),
             callbacks: Arc::new(DashMap::new()),
             #[cfg(feature = "python-bindings")]
             python_callbacks: Arc::new(DashMap::new()),
@@ -111,6 +114,15 @@ impl IpcHandler {
     where
         F: Fn(IpcMessage) -> Result<serde_json::Value, String> + Send + Sync + 'static,
     {
+        let closed = self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *closed {
+            drop(closed);
+            drop(callback);
+            return;
+        }
         self.callbacks
             .entry(event.to_string())
             .or_default()
@@ -120,27 +132,31 @@ impl IpcHandler {
     /// Register a Python callback for an event
     #[cfg(feature = "python-bindings")]
     pub fn register_python_callback(&self, event: &str, callback: Py<PyAny>) {
+        let closed = self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *closed {
+            drop(closed);
+            drop(callback);
+            return;
+        }
         self.python_callbacks
             .entry(event.to_string())
             .or_default()
-            .push(PythonCallback::new(callback));
+            .push(Arc::new(PythonCallback::new(callback)));
+        drop(closed);
         tracing::debug!("Registered Python callback for event: {}", event);
     }
 
     /// Register multiple Python callbacks at once (batch registration)
     ///
-    /// This is more efficient than calling register_python_callback multiple times
-    /// because it logs only once for the entire batch.
+    /// Each registration obeys the same permanent shutdown admission gate.
     #[cfg(feature = "python-bindings")]
     pub fn register_python_callbacks_batch(&self, callbacks: Vec<(String, Py<PyAny>)>) {
-        let count = callbacks.len();
         for (event, callback) in callbacks {
-            self.python_callbacks
-                .entry(event)
-                .or_default()
-                .push(PythonCallback::new(callback));
+            self.register_python_callback(&event, callback);
         }
-        tracing::info!("Registered {} Python callbacks in batch", count);
     }
 
     /// Get the count of registered events (both Rust and Python callbacks)
@@ -178,6 +194,13 @@ impl IpcHandler {
     #[allow(dead_code)]
     pub fn handle_message(&self, message: IpcMessage) -> Result<serde_json::Value, String> {
         tracing::debug!("Handling IPC message: {}", message.event);
+        if *self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            return Err("IPC handler is shut down".to_string());
+        }
 
         // Handle internal JS callback result event
         #[cfg(feature = "python-bindings")]
@@ -191,21 +214,23 @@ impl IpcHandler {
             tracing::debug!("WebView bridge ready: {:?}", message.data);
         }
 
-        // First try Python callbacks (only when python-bindings feature is enabled)
+        // Snapshot Arc ownership, then release the shard before any application code.
         #[cfg(feature = "python-bindings")]
-        if let Some(event_callbacks) = self.python_callbacks.get(&message.event) {
-            tracing::info!(
-                "Found {} Python callbacks for event: {}",
-                event_callbacks.value().len(),
-                message.event
-            );
-            for callback in event_callbacks.value() {
-                tracing::info!("Calling Python callback for event: {}", message.event);
-                if let Err(e) = callback.call(message.data.clone()) {
-                    tracing::error!("Python callback error: {}", e);
-                    return Err(e);
+        let callbacks = self
+            .python_callbacks
+            .get(&message.event)
+            .map(|callbacks| callbacks.value().clone());
+        #[cfg(feature = "python-bindings")]
+        if let Some(callbacks) = callbacks {
+            for callback in callbacks {
+                let closed = *self
+                    .admission_closed
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if closed {
+                    return Err("IPC handler is shut down".to_string());
                 }
-                tracing::info!("Python callback completed for event: {}", message.event);
+                callback.call(message.data.clone())?;
             }
             return Ok(serde_json::json!({"status": "ok"}));
         }
@@ -215,17 +240,13 @@ impl IpcHandler {
             return Ok(serde_json::json!({"status": "ok", "message": "ready acknowledged"}));
         }
 
-        // Then try Rust callbacks
-        if let Some(event_callbacks) = self.callbacks.get(&message.event) {
-            if let Some(callback) = event_callbacks.value().first() {
-                match callback(message.clone()) {
-                    Ok(result) => return Ok(result),
-                    Err(e) => {
-                        tracing::error!("IPC callback error: {}", e);
-                        return Err(e);
-                    }
-                }
-            }
+        // Rust callbacks may also reenter registration or shutdown.
+        let callback = self
+            .callbacks
+            .get(&message.event)
+            .and_then(|callbacks| callbacks.value().first().cloned());
+        if let Some(callback) = callback {
+            return callback(message.clone());
         }
 
         // No callback found
@@ -290,12 +311,55 @@ impl IpcHandler {
         self.python_callbacks.remove(event);
     }
 
-    /// Clear all callbacks
+    /// Clear callbacks without running user destructors under a shard or admission lock.
     #[allow(dead_code)]
     pub fn clear(&self) {
-        self.callbacks.clear();
+        self.detach_callbacks(false);
+    }
+
+    /// Close registration without dropping callbacks; callable finalizers can reenter safely.
+    pub fn close_admission(&self) {
+        *self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
+    }
+
+    /// Close registration permanently before releasing hosted callback ownership.
+    pub fn shutdown_hosted(&self) {
+        self.detach_callbacks(true);
+    }
+
+    fn detach_callbacks(&self, shutdown: bool) {
+        let mut closed = self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *closed |= shutdown;
+        let keys: Vec<String> = self
+            .callbacks
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        let detached: Vec<_> = keys
+            .iter()
+            .filter_map(|key| self.callbacks.remove(key))
+            .collect();
         #[cfg(feature = "python-bindings")]
-        self.python_callbacks.clear();
+        let detached_python = {
+            let keys: Vec<String> = self
+                .python_callbacks
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect();
+            keys.iter()
+                .filter_map(|key| self.python_callbacks.remove(key))
+                .collect::<Vec<_>>()
+        };
+        drop(closed);
+        drop(detached);
+        #[cfg(feature = "python-bindings")]
+        drop(detached_python);
     }
 }
 

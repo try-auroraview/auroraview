@@ -2163,3 +2163,124 @@ e2e-ci: e2e-install gallery-pack-debug
     -proofshot stop
     @bash -lc 'pkill -f auroraview-gallery-debug || true'
     @echo "[OK] CI E2E complete. Artifacts: ./proofshot-artifacts/"
+
+# Private opt-in candidate. Does not change published Linux capabilities.
+[linux]
+install-hosted-gtk-hakari: prepare-hosted-gtk-test-rust
+    if ! vx cargo hakari --version 2>/dev/null | grep -Fx "cargo-hakari 0.9.39"; then vx rustup run 1.95.0 cargo install cargo-hakari --locked --version 0.9.39 --force; fi
+    vx cargo hakari --version
+
+[linux]
+prepare-hosted-gtk-hakari:
+    vx cargo hakari --version
+    vx just hakari-sync
+    vx just hakari-check
+
+[linux]
+build-hosted-gtk: assets-build sdk-build-assets
+    vx uv run maturin build --features "ext-module,python-bindings,abi3-py38,experimental-hosted-gtk" --out dist/hosted-gtk
+
+[linux]
+test-hosted-gtk-queue:
+    vx rustup run 1.95.0 cargo test --test hosted_gtk_queue --features "experimental-hosted-gtk,test-helpers"
+
+# Process deadline makes a finalizer-reentry deadlock an observable test failure.
+[linux]
+test-hosted-gtk-source:
+    timeout 60s vx rustup run 1.95.0 cargo test --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers"
+
+# CI preparation is separate from the deadlock-sensitive execution deadline.
+[linux]
+compile-hosted-gtk-source: assets-build sdk-build-assets
+    vx rustup run 1.95.0 cargo test --no-run --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers"
+
+[linux]
+test-hosted-gtk-python-source:
+    vx python -m unittest discover -s tests/hosted_gtk_source -p 'test_*.py' -v
+
+[linux]
+hosted-gtk-toolchain-info lane="production":
+    vx python scripts/ci/pin_hosted_gtk_rust.py {{lane}} --verify-environment
+    vx python --version
+    vx just --version
+    vx python -c "import sys; assert sys.version_info[:3] == (3, 11, 15)"
+
+[linux]
+test-hosted-gtk-feature-off:
+    vx rustup run 1.95.0 cargo test --test ipc_message_queue_integration --test ipc_json_integration --test lifecycle_integration --features "test-helpers"
+
+# This focused suite has no Qt fixtures; keep other pytest plugins enabled.
+[linux]
+test-hosted-gtk-python-regression:
+    vx uv run --no-sync pytest -p no:pytest-qt tests/hosted_gtk_source/test_close_admission.py tests/python/unit/test_api_binding.py tests/python/unit/test_host_rpc_dispatch.py tests/python/unit/test_webview_close.py tests/python/unit/test_webview_host_lifecycle.py tests/python/unit/test_lifecycle_dispatch.py tests/python/unit/test_event_cancellation.py -v --tb=short --timeout=60 --junitxml=hosted-gtk-evidence/python-regression.xml
+
+[linux]
+lint-hosted-gtk-source:
+    vx just unsafe-audit
+    vx rustup run 1.95.0 cargo clippy --lib --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers" -- -D warnings
+    vx uv run --no-sync ruff check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py scripts/ci/pin_hosted_gtk_rust.py scripts/ci/pin_hosted_gtk_python.py
+    vx uv run --no-sync ruff format --check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py scripts/ci/pin_hosted_gtk_rust.py scripts/ci/pin_hosted_gtk_python.py
+
+# Run before selecting the development compiler so formatting stays on the MSRV.
+[linux]
+format-check-hosted-gtk-source:
+    vx rustup run 1.90.0 cargo fmt --all -- --check
+
+# Keep build preparation separate from compilation and use the exact built wheel.
+[linux]
+prepare-hosted-gtk-source:
+    vx uv sync --group dev --group test --no-install-project
+
+[linux]
+install-hosted-gtk-test-wheel:
+    vx python scripts/verify_hosted_gtk_wheel.py
+    vx uv pip install --no-deps --force-reinstall dist/hosted-gtk/*.whl
+    vx uv run --no-sync python scripts/verify_hosted_gtk_wheel.py --installed
+
+# vx's rust provider installs rustup; choose the project compiler explicitly.
+[linux]
+prepare-hosted-gtk-rust:
+    vx rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+    vx rustup default 1.90.0
+
+# The newer compiler is only for existing dev-dependencies in tests and clippy.
+[linux]
+prepare-hosted-gtk-test-rust:
+    vx rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+
+# CI-only selection and receipts; ordinary local wheel builds need no receipt.
+[linux]
+pin-hosted-gtk-rust-environment lane="production":
+    vx python scripts/ci/pin_hosted_gtk_rust.py {{lane}}
+
+[linux]
+verify-hosted-gtk-wheel-environment:
+    vx uv run --no-sync python scripts/ci/pin_hosted_gtk_rust.py production --verify-environment
+
+# CI-only Python embedding paths; run after the production wheel has been built.
+[linux]
+pin-hosted-gtk-python-environment:
+    vx python scripts/ci/pin_hosted_gtk_python.py
+
+[linux]
+verify-hosted-gtk-python-environment:
+    vx python scripts/ci/pin_hosted_gtk_python.py --verify-environment
+
+# One disposable foreground Blender process; no default Linux adapter enablement.
+[linux]
+prepare-blender-hosted-e2e:
+    mkdir -p .ci/blender .ci/blender-test-site blender-hosted-evidence
+    sha256sum -c .ci/core-receipt/wheels.sha256
+    git rev-parse HEAD > blender-hosted-evidence/source.txt
+    cmp .ci/core-receipt/source.txt blender-hosted-evidence/source.txt
+    git -C .ci/blender-adapter rev-parse HEAD > blender-hosted-evidence/adapter-source.txt
+    curl --fail --location --retry 2 --max-time 180 https://download.blender.org/release/Blender3.6/blender-3.6.21-linux-x64.tar.xz -o .ci/blender.tar.xz
+    sha256sum .ci/blender.tar.xz > blender-hosted-evidence/blender-download.sha256
+    tar -xf .ci/blender.tar.xz -C .ci/blender --strip-components=1
+    vx uv pip install --python-version 3.10 --target .ci/blender-test-site --no-deps dist/hosted-gtk/*.whl .ci/blender-adapter
+    vx python -m py_compile scripts/ci/blender_hosted_e2e.py
+
+[linux]
+test-blender-hosted-e2e:
+    timeout --signal=TERM --kill-after=10s 150s dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1600x900x24" bash scripts/ci/run_blender_hosted_e2e.sh "$PWD/.ci/blender/blender" "$PWD/.ci/blender-test-site" "$(find "$PWD/dist/hosted-gtk" -maxdepth 1 -name '*.whl' -print -quit)" "$PWD/blender-hosted-evidence"
+

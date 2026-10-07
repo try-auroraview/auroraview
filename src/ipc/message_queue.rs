@@ -21,6 +21,8 @@
 
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use ipckit::graceful::ShutdownState;
+#[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -87,6 +89,16 @@ impl Default for MessageQueueConfig {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct MessageQueue {
+    /// Serializes nonblocking admission with shutdown; contains no Python/native objects.
+    admission: Arc<Mutex<()>>,
+    /// Hosted lifecycle: 0 = unused, 1 = active, 2 = closing, 3 = destroyed.
+    /// Only plain atomic state crosses threads; native objects remain owner-local.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    hosted_state: Arc<AtomicU8>,
+    /// One document only: 0 = bootstrap, 1 = initial policy allowed, 2 = committed.
+    /// No document identity travels over IPC; navigation closes this experiment.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    hosted_document: Arc<AtomicU8>,
     /// Sender for pushing messages (lock-free)
     tx: Sender<WebViewMessage>,
 
@@ -119,6 +131,11 @@ impl MessageQueue {
     pub fn with_config(config: MessageQueueConfig) -> Self {
         let (tx, rx) = bounded(config.capacity);
         Self {
+            admission: Arc::new(Mutex::new(())),
+            #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+            hosted_state: Arc::new(AtomicU8::new(0)),
+            #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+            hosted_document: Arc::new(AtomicU8::new(0)),
             tx,
             rx,
             event_loop_proxy: Arc::new(Mutex::new(None)),
@@ -136,7 +153,12 @@ impl MessageQueue {
     ///
     /// Uses ipckit's `ShutdownState` for graceful shutdown coordination.
     pub fn shutdown(&self) {
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.shutdown_state.shutdown();
+        drop(admission);
         tracing::info!(
             "[MessageQueue] Shutdown signaled via ipckit - no more messages will be sent"
         );
@@ -170,6 +192,49 @@ impl MessageQueue {
         }
     }
 
+    /// Nonblocking, observable admission for operations with callback ownership.
+    /// No command is admitted after shutdown or hosted close intent.
+    pub fn try_push(&self, message: WebViewMessage) -> Result<(), String> {
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.hosted_state() != 0 {
+            if matches!(&message, WebViewMessage::Close) {
+                let _ =
+                    self.hosted_state
+                        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
+                return Ok(());
+            }
+            if self.hosted_state() != 1 {
+                return Err("Hosted WebView is closing".to_string());
+            }
+            if Self::is_navigation(&message) {
+                return Err(
+                    "Hosted GTK is single-document; create a fresh view to navigate".to_string(),
+                );
+            }
+        }
+        if self.is_shutdown() {
+            return Err("WebView queue is shut down".to_string());
+        }
+        let _operation = self.shutdown_state.begin_operation();
+        let result = self.tx.try_send(message).map_err(|error| {
+            self.metrics.record_drop();
+            format!("WebView queue rejected command: {}", error)
+        });
+        if result.is_ok() {
+            self.metrics.record_send();
+            self.metrics.update_peak_queue_length(self.len());
+        }
+        drop(admission);
+        if result.is_ok() {
+            self.wake_event_loop();
+        }
+        result
+    }
+
     /// Push a message to the queue (thread-safe)
     ///
     /// This can be called from any thread, including the DCC main thread.
@@ -181,6 +246,19 @@ impl MessageQueue {
     ///
     /// Uses ipckit's operation guard to track in-flight operations for graceful shutdown.
     pub fn push(&self, message: WebViewMessage) {
+        if !self.config.block_on_full {
+            if let Err(error) = self.try_push(message) {
+                tracing::debug!("Queue rejected command: {}", error);
+            }
+            return;
+        }
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.hosted_state() != 0 {
+            if let Err(error) = self.try_push(message) {
+                tracing::debug!("Hosted queue rejected command: {}", error);
+            }
+            return;
+        }
         // Check shutdown flag first - if shutdown, silently drop the message
         // This prevents "EventLoopClosed" errors from background threads
         if self.shutdown_state.is_shutdown() {
@@ -277,6 +355,13 @@ impl MessageQueue {
     /// - `Err(String)` if all retry attempts failed
     #[allow(dead_code)]
     pub fn push_with_retry(&self, message: WebViewMessage) -> Result<(), String> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.hosted_state() != 0 {
+            return self.try_push(message);
+        }
+        if self.is_shutdown() {
+            return Err("WebView queue is shut down".to_string());
+        }
         let max_retries = self.config.max_retries;
         let retry_delay = std::time::Duration::from_millis(self.config.retry_delay_ms);
         let start_time = std::time::Instant::now();
@@ -409,6 +494,102 @@ impl MessageQueue {
             self.metrics.record_receive();
         }
         message
+    }
+
+    /// Mark a queue as belonging to the experimental owner-thread GTK runtime.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    pub fn begin_hosted(&self) -> Result<(), String> {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.config.block_on_full || self.is_shutdown() {
+            return Err("Hosted queues must be open and nonblocking".to_string());
+        }
+        self.hosted_state
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| "Hosted views are single-use; construct a fresh view".to_string())
+    }
+
+    /// Navigation commands are forbidden even when queued before hosted creation.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    pub fn is_navigation(message: &WebViewMessage) -> bool {
+        matches!(
+            message,
+            WebViewMessage::LoadUrl(_) | WebViewMessage::LoadHtml(_) | WebViewMessage::Reload
+        )
+    }
+
+    /// Permit at most the configured initial navigation, before the first commit.
+    /// Redirects, reloads, frames and later navigation fail closed. The policy
+    /// callback holds only plain state; native destruction happens after return.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    pub fn hosted_navigation_request(&self, is_initial_url: bool) -> bool {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.hosted_state() == 1
+            && !self.is_shutdown()
+            && is_initial_url
+            && self
+                .hosted_document
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            return true;
+        }
+        let _ = self
+            .hosted_state
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
+        false
+    }
+
+    /// Wry's GTK Started callback is WebKit's document commit. It seals the
+    /// bootstrap exception before admitting JS host calls. An unexpected second
+    /// commit closes the view and never admits that document's IPC.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    pub fn hosted_document_started(&self, is_initial_url: bool) -> bool {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.hosted_state() == 1
+            && !self.is_shutdown()
+            && is_initial_url
+            && self.hosted_document.load(Ordering::Acquire) < 2
+        {
+            self.hosted_document.store(2, Ordering::Release);
+            return true;
+        }
+        let _ = self
+            .hosted_state
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
+        false
+    }
+
+    /// JavaScript cannot enqueue host work before the initial document is sealed
+    /// or after navigation/close intent, including a late WebKit IPC delivery.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    pub fn hosted_ipc_allowed(&self) -> bool {
+        self.hosted_state() == 1
+            && !self.is_shutdown()
+            && self.hosted_document.load(Ordering::Acquire) == 2
+    }
+
+    /// Read hosted lifecycle without accessing any GTK/Wry object.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    pub fn hosted_state(&self) -> u8 {
+        self.hosted_state.load(Ordering::Acquire)
+    }
+
+    /// Publish completion only after owner-thread native teardown.
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    pub fn finish_hosted(&self) {
+        self.shutdown();
+        self.clear();
+        self.hosted_state.store(3, Ordering::Release);
     }
 
     /// Check if the queue is empty

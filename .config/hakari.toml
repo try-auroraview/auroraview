@@ -31,6 +31,8 @@ platforms = [
 # When abi3-py38 is unified into workspace-hack, it forces PyO3 to require
 # Python >= 3.8, breaking the py37 wheel build.
 [traversal-excludes]
+# Keep the independently published host contract free of workspace dependencies.
+workspace-members = ["auroraview-contract"]
 # Exclude the entire pyo3 ecosystem from hakari unification to prevent
 # abi3 features from being forcibly enabled across all workspace members.
 third-party = [

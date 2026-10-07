@@ -1,0 +1,275 @@
+name: Experimental hosted GTK source checks
+
+on:
+  pull_request:
+    branches: ['fix/host-rpc-lifecycle-r4']
+  workflow_dispatch:
+    inputs:
+      blender_e2e:
+        description: 'Run the single foreground Blender / experimental GTK E2E'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-gtk-source-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Linux compile and source contracts (not desktop acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: '2'
+      PYTHONDONTWRITEBYTECODE: '1'
+      # Dependency sync is explicit; uv run must not rebuild/replace the wheel.
+      UV_NO_SYNC: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare existing official repository toolchain and dependencies
+        uses: ./.github/actions/setup-auroraview
+        with:
+          python-version: '3.11.15'
+          rust-components: 'rustfmt clippy'
+          cache-key-suffix: 'hosted-gtk-experimental'
+          # ci-install would build the project during uv sync, before assets.
+          install-dependencies: 'false'
+
+      # Install the generator before pinning Cargo/compiler paths for the wheel.
+      # cargo-hakari 0.9.39 requires Rust 1.91 or newer to compile.
+      - name: Install pinned cargo-hakari with the development compiler
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          set -o pipefail
+          vx just install-hosted-gtk-hakari 2>&1 | tee hosted-gtk-evidence/hakari-install.txt
+
+      - name: Select Rust 1.90.0 for the production wheel and source format
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          set -o pipefail
+          vx just prepare-hosted-gtk-rust 2>&1 | tee hosted-gtk-evidence/rust-selection-production.txt
+          vx just pin-hosted-gtk-rust-environment production 2>&1 | tee hosted-gtk-evidence/rust-paths-production.txt
+
+      - name: Record exact source and production toolchain
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          set -o pipefail
+          git rev-parse HEAD | tee hosted-gtk-evidence/source.txt
+          vx just hosted-gtk-toolchain-info production 2>&1 | tee hosted-gtk-evidence/toolchain-production.txt
+
+      - name: Regenerate workspace feature metadata from the existing exclusions
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just prepare-hosted-gtk-hakari 2>&1 | tee hosted-gtk-evidence/hakari.txt
+
+      - name: Install test dependencies without an implicit project build
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just prepare-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/dependencies.txt
+
+      - name: Run real Python lifecycle code with explicit fake native boundary
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-python-source 2>&1 | tee hosted-gtk-evidence/python-source.txt
+
+      - name: Build the opt-in hosted GTK wheel with production Rust 1.90.0
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf dist/hosted-gtk
+          vx just verify-hosted-gtk-wheel-environment 2>&1 | tee hosted-gtk-evidence/wheel-environment.txt
+          vx just build-hosted-gtk 2>&1 | tee hosted-gtk-evidence/wheel-build.txt
+          sha256sum dist/hosted-gtk/*.whl | tee hosted-gtk-evidence/wheels.sha256
+
+      - name: Check source formatting with production Rust 1.90.0
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just format-check-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/format.txt
+
+      # The root dev-dependency auroraview-mcp pulls dcc-mcp-protocols 0.15,
+      # which requires Rust 1.95. This lane does not change the source MSRV.
+      - name: Select Rust 1.95.0 for development test and clippy targets
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just prepare-hosted-gtk-test-rust 2>&1 | tee hosted-gtk-evidence/rust-selection-development.txt
+          vx just pin-hosted-gtk-rust-environment development 2>&1 | tee hosted-gtk-evidence/rust-paths-development.txt
+
+      - name: Record the exact development toolchain
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just hosted-gtk-toolchain-info development 2>&1 | tee hosted-gtk-evidence/toolchain-development.txt
+
+      # Embedding tests need the managed Python's relocated shared library.
+      # Apply compiler/loader paths only after the production wheel is finished.
+      - name: Resolve and verify the development Python shared library
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just pin-hosted-gtk-python-environment 2>&1 | tee hosted-gtk-evidence/python-embedding-setup.txt
+
+      - name: Verify the embedding environment reaches vx and just
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just verify-hosted-gtk-python-environment 2>&1 | tee hosted-gtk-evidence/python-embedding-verify.txt
+
+      - name: Compile hosted Rust test targets without execution deadline
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just compile-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/hosted-compile.txt
+
+      - name: Run bounded hosted queue and ownership contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/hosted-tests.txt
+
+      - name: Compile and run affected contracts with hosted GTK disabled
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-feature-off 2>&1 | tee hosted-gtk-evidence/feature-off.txt
+
+      - name: Install the exact experimental wheel for Python regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just install-hosted-gtk-test-wheel 2>&1 | tee hosted-gtk-evidence/wheel-install.txt
+
+      - name: Regress the existing Python host lifecycle contract
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-python-regression 2>&1 | tee hosted-gtk-evidence/python-regression.txt
+
+      - name: Audit unsafe boundaries and hosted development clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just lint-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/lint.txt
+
+      - name: Record resolver output and honest validation boundary
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          git diff -- Cargo.lock > hosted-gtk-evidence/Cargo.lock.patch
+          cat hosted-gtk-evidence/Cargo.lock.patch
+          cp Cargo.lock hosted-gtk-evidence/Cargo.lock
+          sha256sum Cargo.lock > hosted-gtk-evidence/Cargo.lock.sha256
+          git diff -- uv.lock > hosted-gtk-evidence/uv.lock.patch
+          cat hosted-gtk-evidence/uv.lock.patch
+          cp uv.lock hosted-gtk-evidence/uv.lock
+          sha256sum uv.lock > hosted-gtk-evidence/uv.lock.sha256
+          git diff -- Cargo.toml ':(glob)crates/**/Cargo.toml' .config/hakari.toml > hosted-gtk-evidence/hakari-metadata.patch
+          cat hosted-gtk-evidence/hakari-metadata.patch
+          git status --short -- Cargo.lock uv.lock Cargo.toml ':(glob)crates/**/Cargo.toml' .config/hakari.toml > hosted-gtk-evidence/hakari-metadata.status
+          cat hosted-gtk-evidence/hakari-metadata.status
+          cp crates/auroraview-workspace-hack/Cargo.toml hosted-gtk-evidence/workspace-hack.Cargo.toml
+          cp .config/hakari.toml hosted-gtk-evidence/hakari-config.toml
+          sha256sum .config/hakari.toml crates/auroraview-workspace-hack/Cargo.toml > hosted-gtk-evidence/hakari-metadata.sha256
+          printf '%s\n' \
+            'Production wheel and source format compiler: Rust 1.90.0.' \
+            'Development test/clippy compiler: Rust 1.95.0 for existing dev-dependencies.' \
+            'Embedding-library preflight verifies the managed Python library and search paths only.' \
+            'Rust linking and bounded execution require their own successful step logs.' \
+            'Lane selection alone does not prove the wheel or tests completed; inspect step logs.' \
+            'Generated metadata or resolver drift makes this a diagnostic run, not an exact-head pass.' \
+            'Native Blender/WebKit rendering: not run in this job.' \
+            'Native desktop acceptance and rendering evidence remain required.' \
+            'An uploaded experimental wheel is not a release or support claim.' \
+            > hosted-gtk-evidence/BOUNDARY.txt
+
+      - name: Reject uncommitted resolver or generated metadata changes
+        if: always()
+        run: git diff --exit-code -- Cargo.lock uv.lock Cargo.toml ':(glob)crates/**/Cargo.toml' .config/hakari.toml
+
+      - name: Upload source diagnostics separately from the wheel
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-gtk-diagnostics-${{ github.sha }}
+          path: hosted-gtk-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the experimental wheel
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-gtk-wheel-${{ github.sha }}
+          path: dist/hosted-gtk/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  blender-e2e:
+    name: Foreground Blender WebView E2E (experimental route)
+    needs: source
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.blender_e2e) ||
+      (github.event_name == 'pull_request' && github.head_ref == 'experiment/hosted-gtk-source-v4')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      GDK_BACKEND: x11
+      UV_NO_SYNC: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: try-auroraview/auroraview-blender
+          ref: 392b1c3b5446202fc5301d0180137b2c4b37b7c5
+          path: .ci/blender-adapter
+          persist-credentials: false
+      - name: Set up the existing repository tool runner
+        uses: loonghao/vx@3bcef20521ac4836e5e56da55c09af90f320c564 # vx-v0.9.33
+      - name: Download this run's exact experimental wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: hosted-gtk-wheel-${{ github.sha }}
+          path: dist/hosted-gtk
+      - name: Download this run's wheel/source receipt
+        uses: actions/download-artifact@v8
+        with:
+          name: hosted-gtk-diagnostics-${{ github.sha }}
+          path: .ci/core-receipt
+      - name: Install official GUI runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth dbus-x11 openbox wmctrl scrot x11-utils \
+            libwebkit2gtk-4.1-0 libxdo3 libayatana-appindicator3-1 \
+            libgl1 libegl1 libxi6 libxfixes3 libxrender1 libsm6 libxxf86vm1
+      - name: Prepare official Blender and isolated packages
+        run: vx just prepare-blender-hosted-e2e
+      - name: Run one bounded foreground Blender and native WebView session
+        run: vx just test-blender-hosted-e2e
+      - name: Save actual screenshots and host evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: blender-hosted-e2e-${{ github.sha }}
+          path: blender-hosted-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
