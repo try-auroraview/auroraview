@@ -46,11 +46,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup AuroraView Environment
-        uses: ./.github/actions/setup-auroraview
+      - name: Setup vx helpers
+        uses: loonghao/vx@vx-v0.9.33
         with:
-          install-dependencies: 'false'
-          cache-key-suffix: 'sdk-typecheck'
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just bun'
+          cache: 'false'
 
       - name: Run type check
         run: vx just sdk-typecheck
@@ -102,11 +104,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup AuroraView Environment
-        uses: ./.github/actions/setup-auroraview
+      - name: Setup vx helpers
+        uses: loonghao/vx@vx-v0.9.33
         with:
-          install-dependencies: 'false'
-          cache-key-suffix: 'sdk-coverage'
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just bun'
+          cache: 'false'
 
       - name: Run tests with coverage
         run: vx just sdk-test-cov
@@ -136,11 +140,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup AuroraView Environment
-        uses: ./.github/actions/setup-auroraview
+      - name: Setup vx helpers
+        uses: loonghao/vx@vx-v0.9.33
         with:
-          install-dependencies: 'false'
-          cache-key-suffix: 'sdk-build-package'
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just bun'
+          cache: 'false'
 
       - name: Build SDK
         run: vx just sdk-build
@@ -177,11 +183,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup AuroraView Environment
-        uses: ./.github/actions/setup-auroraview
+      - name: Setup vx helpers
+        uses: loonghao/vx@vx-v0.9.33
         with:
-          install-dependencies: 'false'
-          cache-key-suffix: 'sdk-build-assets'
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just bun'
+          cache: 'false'
 
       - name: Build assets
         run: vx just ci-sdk-assets
@@ -227,11 +235,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup AuroraView Environment
-        uses: ./.github/actions/setup-auroraview
+      - name: Setup vx helpers
+        uses: loonghao/vx@vx-v0.9.33
         with:
-          install-dependencies: 'false'
-          cache-key-suffix: 'sdk-e2e'
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just bun'
+          cache: 'false'
 
       - name: Download SDK package
         uses: actions/download-artifact@v8
@@ -255,6 +265,9 @@ jobs:
           # Verify the key entry point exists
           test -f packages/auroraview-sdk/tests/e2e/test-app/dist/index.js || \
             (echo "ERROR: index.js not found in test-app/dist/" && exit 1)
+
+      - name: Configure bounded apt downloads
+        run: bash scripts/ci/configure_apt.sh
 
       - name: Install Playwright
         working-directory: packages/auroraview-sdk
@@ -282,11 +295,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup AuroraView Environment
-        uses: ./.github/actions/setup-auroraview
+      - name: Setup vx helpers
+        uses: loonghao/vx@vx-v0.9.33
         with:
-          install-dependencies: 'false'
-          cache-key-suffix: 'sdk-gallery-integration'
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just bun'
+          cache: 'false'
 
       - name: Download SDK package
         uses: actions/download-artifact@v8
