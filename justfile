@@ -2221,3 +2221,9 @@ install-hosted-gtk-test-wheel:
     vx python scripts/verify_hosted_gtk_wheel.py
     vx uv pip install --no-deps --force-reinstall dist/hosted-gtk/*.whl
     vx uv run --no-sync python scripts/verify_hosted_gtk_wheel.py --installed
+
+# vx's rust provider installs rustup; choose the project compiler explicitly.
+[linux]
+prepare-hosted-gtk-rust:
+    vx rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+    vx rustup default 1.90.0

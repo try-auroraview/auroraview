@@ -1,8 +1,6 @@
 name: Experimental hosted GTK source checks
 
 on:
-  push:
-    branches: ['experiment/hosted-gtk-source-v4']
   pull_request:
     branches: ['fix/host-rpc-lifecycle-r4']
   workflow_dispatch:
@@ -38,6 +36,13 @@ jobs:
           cache-key-suffix: 'hosted-gtk-experimental'
           # ci-install would build the project during uv sync, before assets.
           install-dependencies: 'false'
+
+      - name: Select the exact compiler in the vx-managed Rust home
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          set -o pipefail
+          vx just prepare-hosted-gtk-rust 2>&1 | tee hosted-gtk-evidence/rust-selection.txt
 
       - name: Record exact source and toolchain
         shell: bash
