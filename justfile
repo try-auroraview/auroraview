@@ -2166,6 +2166,17 @@ e2e-ci: e2e-install gallery-pack-debug
 
 # Private opt-in candidate. Does not change published Linux capabilities.
 [linux]
+install-hosted-gtk-hakari: prepare-hosted-gtk-test-rust
+    vx rustup run 1.95.0 cargo install cargo-hakari --locked --version 0.9.39
+    vx cargo hakari --version
+
+[linux]
+prepare-hosted-gtk-hakari:
+    vx cargo hakari --version
+    vx just hakari-sync
+    vx just hakari-check
+
+[linux]
 build-hosted-gtk: assets-build sdk-build-assets
     vx uv run maturin build --features "ext-module,python-bindings,abi3-py38,experimental-hosted-gtk" --out dist/hosted-gtk
 

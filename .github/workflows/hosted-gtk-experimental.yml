@@ -37,6 +37,15 @@ jobs:
           # ci-install would build the project during uv sync, before assets.
           install-dependencies: 'false'
 
+      # Install the generator before pinning Cargo/compiler paths for the wheel.
+      # cargo-hakari 0.9.39 requires Rust 1.91 or newer to compile.
+      - name: Install pinned cargo-hakari with the development compiler
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          set -o pipefail
+          vx just install-hosted-gtk-hakari 2>&1 | tee hosted-gtk-evidence/hakari-install.txt
+
       - name: Select Rust 1.90.0 for the production wheel and source format
         shell: bash
         run: |
@@ -52,6 +61,12 @@ jobs:
           set -o pipefail
           git rev-parse HEAD | tee hosted-gtk-evidence/source.txt
           vx just hosted-gtk-toolchain-info production 2>&1 | tee hosted-gtk-evidence/toolchain-production.txt
+
+      - name: Regenerate workspace feature metadata from the existing exclusions
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just prepare-hosted-gtk-hakari 2>&1 | tee hosted-gtk-evidence/hakari.txt
 
       - name: Install test dependencies without an implicit project build
         shell: bash
@@ -144,26 +159,41 @@ jobs:
           cat hosted-gtk-evidence/uv.lock.patch
           cp uv.lock hosted-gtk-evidence/uv.lock
           sha256sum uv.lock > hosted-gtk-evidence/uv.lock.sha256
+          git diff -- Cargo.toml ':(glob)crates/**/Cargo.toml' .config/hakari.toml > hosted-gtk-evidence/hakari-metadata.patch
+          cat hosted-gtk-evidence/hakari-metadata.patch
+          git status --short -- Cargo.lock uv.lock Cargo.toml ':(glob)crates/**/Cargo.toml' .config/hakari.toml > hosted-gtk-evidence/hakari-metadata.status
+          cat hosted-gtk-evidence/hakari-metadata.status
+          cp crates/auroraview-workspace-hack/Cargo.toml hosted-gtk-evidence/workspace-hack.Cargo.toml
+          cp .config/hakari.toml hosted-gtk-evidence/hakari-config.toml
+          sha256sum .config/hakari.toml crates/auroraview-workspace-hack/Cargo.toml > hosted-gtk-evidence/hakari-metadata.sha256
           printf '%s\n' \
             'Production wheel and source format compiler: Rust 1.90.0.' \
             'Development test/clippy compiler: Rust 1.95.0 for existing dev-dependencies.' \
             'Lane selection alone does not prove the wheel or tests completed; inspect step logs.' \
+            'Generated metadata or resolver drift makes this a diagnostic run, not an exact-head pass.' \
             'Native Blender/WebKit rendering: not run in this job.' \
             'Native desktop acceptance and rendering evidence remain required.' \
             'An uploaded experimental wheel is not a release or support claim.' \
             > hosted-gtk-evidence/BOUNDARY.txt
 
-      - name: Reject uncommitted resolver changes
+      - name: Reject uncommitted resolver or generated metadata changes
         if: always()
-        run: git diff --exit-code -- Cargo.lock uv.lock
+        run: git diff --exit-code -- Cargo.lock uv.lock Cargo.toml ':(glob)crates/**/Cargo.toml' .config/hakari.toml
 
-      - name: Upload source diagnostics and experimental wheel
+      - name: Upload source diagnostics separately from the wheel
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hosted-gtk-source-${{ github.sha }}
-          path: |
-            hosted-gtk-evidence/
-            dist/hosted-gtk/*.whl
+          name: hosted-gtk-diagnostics-${{ github.sha }}
+          path: hosted-gtk-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the experimental wheel
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-gtk-wheel-${{ github.sha }}
+          path: dist/hosted-gtk/*.whl
           if-no-files-found: error
           retention-days: 7
