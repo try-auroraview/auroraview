@@ -1009,6 +1009,7 @@ dependencies = [
  "anyhow",
  "auroraview-core",
  "auroraview-signals",
+ "auroraview-workspace-hack",
  "crossbeam-channel",
  "pyo3",
  "rstest 0.25.0",
@@ -1025,16 +1026,19 @@ version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "arrayvec",
+ "aws-lc-rs",
+ "aws-lc-sys",
  "bitflags 2.12.1",
  "block2",
  "cc",
  "chrono",
  "clap",
  "clap_builder",
+ "console 0.16.3",
  "crossbeam-epoch",
- "crossbeam-utils",
  "crypto-common 0.1.7",
  "data-encoding",
+ "digest 0.10.7",
  "digest 0.11.3",
  "either",
  "errno",
@@ -1048,23 +1052,27 @@ dependencies = [
  "futures-task",
  "futures-util",
  "generic-array",
+ "getrandom 0.2.17",
  "getrandom 0.4.2",
  "half",
  "hashbrown 0.14.5",
- "hashbrown 0.16.1",
  "http",
  "httparse",
  "hyper",
  "hyper-rustls",
  "hyper-util",
  "image",
- "ipnet",
+ "indexmap 2.14.0",
+ "insta",
+ "lazy_static",
  "libc",
+ "libm",
  "linux-raw-sys 0.12.1",
  "log",
  "memchr",
- "miniz_oxide 0.9.1",
+ "miniz_oxide",
  "mio",
+ "num-bigint",
  "num-integer",
  "num-traits",
  "objc2",
@@ -1074,19 +1082,19 @@ dependencies = [
  "objc2-foundation",
  "once_cell",
  "percent-encoding",
- "phf_shared 0.13.1",
+ "phf 0.11.3",
+ "phf_shared 0.11.3",
  "portable-atomic",
- "ppv-lite86",
- "pyo3",
- "pyo3-build-config",
- "pyo3-ffi",
- "rand 0.10.1",
- "rand_chacha 0.9.0",
+ "rand 0.8.6",
+ "rand 0.9.4",
+ "rand_core 0.6.4",
  "raw-window-handle",
  "regex",
  "regex-automata",
  "regex-syntax",
  "reqwest 0.12.28",
+ "reqwest 0.13.4",
+ "rmcp",
  "rust-embed",
  "rust-embed-impl",
  "rust-embed-utils",
@@ -1097,16 +1105,22 @@ dependencies = [
  "scopeguard",
  "serde",
  "serde_core",
- "sha2 0.11.0",
+ "serde_json",
+ "sha2 0.10.9",
+ "signature",
  "simd-adler32",
  "slab",
  "smallvec",
+ "spin",
  "subtle",
  "syn 2.0.117",
+ "sync_wrapper",
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tokio-util",
+ "toml 0.8.2",
  "toml 1.1.2+spec-1.1.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
@@ -1116,6 +1130,7 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-subscriber",
+ "typenum",
  "url",
  "uuid",
  "winapi",
@@ -1123,18 +1138,16 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.61.2",
  "windows-core 0.62.2",
- "windows-sys 0.52.0",
+ "windows-result 0.4.1",
  "windows-sys 0.59.0",
  "windows-sys 0.60.2",
  "windows-sys 0.61.2",
- "winnow 0.7.15",
  "winnow 1.0.3",
  "zerocopy",
  "zeroize",
  "zstd",
  "zstd-safe",
  "zstd-sys",
- "zvariant",
 ]
 
 [[package]]
@@ -1273,7 +1286,7 @@ dependencies = [
  "addr2line",
  "cfg-if",
  "libc",
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
  "object",
  "rustc-demangle",
  "windows-link 0.2.1",
@@ -2032,7 +2045,7 @@ dependencies = [
  "bitflags 1.3.2",
  "core-foundation 0.9.4",
  "core-graphics-types 0.1.3",
- "foreign-types 0.5.0",
+ "foreign-types",
  "libc",
 ]
 
@@ -2045,7 +2058,7 @@ dependencies = [
  "bitflags 2.12.1",
  "core-foundation 0.10.1",
  "core-graphics-types 0.2.0",
- "foreign-types 0.5.0",
+ "foreign-types",
  "libc",
 ]
 
@@ -2664,39 +2677,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "endi"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
-
-[[package]]
 name = "enum-as-inner"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1e6a265c649f3f5979b601d26f1d05ada116434c87741c9493cb56218f76cbc"
 dependencies = [
  "heck 0.5.0",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "enumflags2"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
-dependencies = [
- "enumflags2_derive",
- "serde",
-]
-
-[[package]]
-name = "enumflags2_derive"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
-dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -2787,7 +2773,7 @@ dependencies = [
  "bit_field",
  "half",
  "lebe",
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
  "rayon-core",
  "smallvec",
  "zune-inflate",
@@ -2877,7 +2863,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
  "zlib-rs",
 ]
 
@@ -2921,21 +2907,12 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "foreign-types"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
-dependencies = [
- "foreign-types-shared 0.1.1",
-]
-
-[[package]]
-name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965"
 dependencies = [
  "foreign-types-macros",
- "foreign-types-shared 0.3.1",
+ "foreign-types-shared",
 ]
 
 [[package]]
@@ -2948,12 +2925,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[package]]
-name = "foreign-types-shared"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "foreign-types-shared"
@@ -3803,22 +3774,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-tls"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
-dependencies = [
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "native-tls",
- "tokio",
- "tokio-native-tls",
- "tower-service",
-]
-
-[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3838,7 +3793,6 @@ dependencies = [
  "socket2 0.6.3",
  "system-configuration",
  "tokio",
- "tower-layer",
  "tower-service",
  "tracing",
  "windows-registry 0.6.1",
@@ -4920,16 +4874,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "miniz_oxide"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
-dependencies = [
- "adler2",
- "simd-adler32",
-]
-
-[[package]]
 name = "mio"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5034,23 +4978,6 @@ dependencies = [
  "png 0.18.1",
  "thiserror 2.0.18",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "native-tls"
-version = "0.2.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "465500e14ea162429d264d44189adc38b199b62b1c21eea9f69e4b73cb03bbf2"
-dependencies = [
- "libc",
- "log",
- "openssl",
- "openssl-probe",
- "openssl-sys",
- "schannel",
- "security-framework",
- "security-framework-sys",
- "tempfile",
 ]
 
 [[package]]
@@ -5540,47 +5467,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "openssl"
-version = "0.10.80"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a45fa2aa886c42762255da344f0a0d313e254066c46aad76f300c3d3da62d967"
-dependencies = [
- "bitflags 2.12.1",
- "cfg-if",
- "foreign-types 0.3.2",
- "libc",
- "openssl-macros",
- "openssl-sys",
-]
-
-[[package]]
-name = "openssl-macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
-
-[[package]]
-name = "openssl-sys"
-version = "0.9.116"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28a22dc7140cda5f096e5e7724a6962ca81a7f8bfd2979f9b18c11af56318c4"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
- "vcpkg",
-]
 
 [[package]]
 name = "opentelemetry"
@@ -6083,7 +5973,7 @@ dependencies = [
  "crc32fast",
  "fdeflate",
  "flate2",
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
 ]
 
 [[package]]
@@ -6096,7 +5986,7 @@ dependencies = [
  "crc32fast",
  "fdeflate",
  "flate2",
- "miniz_oxide 0.8.9",
+ "miniz_oxide",
 ]
 
 [[package]]
@@ -6837,12 +6727,10 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-rustls",
- "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
  "mime",
- "native-tls",
  "once_cell",
  "percent-encoding",
  "pin-project-lite",
@@ -6854,7 +6742,6 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-native-tls",
  "tokio-rustls",
  "tokio-util",
  "tower",
@@ -8457,16 +8344,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-native-tls"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
-dependencies = [
- "native-tls",
- "tokio",
-]
-
-[[package]]
 name = "tokio-rustls"
 version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9298,12 +9175,6 @@ dependencies = [
  "itoa",
  "ryu",
 ]
-
-[[package]]
-name = "vcpkg"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version-compare"
@@ -10357,15 +10228,6 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "0.7.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "winnow"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
@@ -10915,45 +10777,4 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
-]
-
-[[package]]
-name = "zvariant"
-version = "5.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1567a6ec68df868cbbfde844cfc6d81649fe5109a62b116b19fabd53e618ee"
-dependencies = [
- "endi",
- "enumflags2",
- "serde",
- "url",
- "winnow 1.0.3",
- "zvariant_derive",
- "zvariant_utils",
-]
-
-[[package]]
-name = "zvariant_derive"
-version = "5.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7d5b780599bbde114e39d9a0799577fad1ced5105d38515745f7b3099d8ceda"
-dependencies = [
- "proc-macro-crate 3.5.0",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
- "zvariant_utils",
-]
-
-[[package]]
-name = "zvariant_utils"
-version = "3.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d464f5733ffa07a3164d656f18533caace9d0638596721355d73256a410d691"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde",
- "syn 2.0.117",
- "winnow 1.0.3",
 ]

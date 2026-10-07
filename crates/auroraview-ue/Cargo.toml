@@ -36,6 +36,7 @@ crossbeam-channel = "0.5"
 
 # UE-specific: Python bindings (optional, enabled via `python-bindings` feature)
 pyo3 = { version = "0.27.2", features = ["multiple-pymethods"], optional = true }
+auroraview-workspace-hack = { version = "0.1", path = "../auroraview-workspace-hack" }
 
 [features]
 python-bindings = ["dep:pyo3"]
