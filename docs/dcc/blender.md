@@ -1,315 +1,102 @@
-# Blender Integration
+# Blender integration
 
-AuroraView integrates with Blender using **Desktop Mode** or **Native Mode (HWND)**, as Blender uses its own UI framework (not Qt).
+New Blender integrations are maintained in
+[auroraview-blender](https://github.com/try-auroraview/auroraview-blender).
+The add-on owns Blender panels, operators, main-thread scheduling and host
+cleanup. AuroraView Core owns the WebView engine, JavaScript bridge, RPC
+messages and generic window lifecycle.
 
-## Integration Modes for Blender
+## Choose a tool surface
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| **Desktop Mode** | Independent window with own event loop | Simple tools, quick prototypes |
-| **Native Mode (HWND)** | Floating window attached to Blender | Production tools, always-on-top panels |
+| Surface | What it displays | Core dependency |
+| --- | --- | --- |
+| Native Blender sidebar panel | Blender properties, operators and layout controls | None |
+| Experimental floating WebView | HTML/CSS/JavaScript in a separate Windows tool window | An explicitly compatible Core build |
+| HTML inside a Blender editor region | No implementation is available | Requires a separate rendering/input integration |
 
-## Installation
+Native tool panels participate in Blender's sidebar layout. They do not embed
+HTML. A floating OS window does not become a Blender panel by assigning an HWND
+parent, and `Panel.draw` does not provide a browser surface. HTML in an editor
+region would require an offscreen frame/input contract and Blender GPU
+integration; those are not implemented by this add-on.
 
-```bash
-pip install auroraview
-```
+## Native add-on tools
 
-## Quick Start
+Use the extension installation and native panel API maintained in the
+[Blender repository](https://github.com/try-auroraview/auroraview-blender).
+Its extension manifest targets Blender 4.2 and newer. The package contains the
+adapter and Blender manifest; it does not bundle Core or a WebView engine.
+It is development source, not a published Blender Extensions listing.
 
-### Desktop Mode
-
-```python
-from auroraview import run_desktop
-
-run_desktop(
-    title="Blender Tool",
-    url="http://localhost:3000",
-    width=800,
-    height=600
-)
-```
-
-### Native Mode (HWND) with Window Effects
-
-```python
-from auroraview import WebView
-
-# Create floating panel with effects
-webview = WebView(
-    title="Blender Tool",
-    url="http://localhost:3000",
-    width=400,
-    height=600,
-    transparent=True,
-    decorations=False,
-    always_on_top=True,
-    tool_window=True,
-)
-
-# Apply window effects (Windows only)
-webview.apply_acrylic((30, 30, 30, 180))
-webview.enable_click_through()
-
-webview.show()
-```
-
-## API Binding Example
+Consumers register their tools through the enabled adapter module on Blender's
+main thread. Extensions use Blender's repository-specific `bl_ext` namespace;
+pass that module to your integration rather than creating a top-level alias.
 
 ```python
-from auroraview import AuroraView
-import bpy
+def register_tools(adapter):
+    def draw(layout, context):
+        layout.label(text="Selected: %d" % len(context.selected_objects))
+        if context.active_object is not None:
+            layout.prop(context.active_object, "location")
 
-class BlenderAPI:
-    def get_selected_objects(self) -> dict:
-        """Get selected objects"""
-        selected = bpy.context.selected_objects
-        return {
-            "objects": [obj.name for obj in selected],
-            "count": len(selected)
-        }
+    adapter.register_panel("EXAMPLE_PT_transform", "Transform", draw)
 
-    def select_object(self, name: str = "") -> dict:
-        """Select object by name"""
-        bpy.ops.object.select_all(action='DESELECT')
-        obj = bpy.data.objects.get(name)
-        if obj:
-            obj.select_set(True)
-            bpy.context.view_layer.objects.active = obj
-            return {"ok": True, "name": name}
-        return {"ok": False, "error": "Object not found"}
 
-    def create_cube(self, name: str = "Cube", size: float = 2.0) -> dict:
-        """Create a cube"""
-        bpy.ops.mesh.primitive_cube_add(size=size)
-        obj = bpy.context.active_object
-        obj.name = name
-        return {"ok": True, "name": obj.name}
-
-    def get_transform(self, name: str = "") -> dict:
-        """Get object transform"""
-        obj = bpy.data.objects.get(name)
-        if obj:
-            return {
-                "ok": True,
-                "location": list(obj.location),
-                "rotation": list(obj.rotation_euler),
-                "scale": list(obj.scale)
-            }
-        return {"ok": False, "error": "Object not found"}
-
-    def set_location(self, name: str = "", x: float = 0, y: float = 0, z: float = 0) -> dict:
-        """Set object location"""
-        obj = bpy.data.objects.get(name)
-        if obj:
-            obj.location = (x, y, z)
-            return {"ok": True}
-        return {"ok": False, "error": "Object not found"}
-
-    def render_image(self, filepath: str = "/tmp/render.png") -> dict:
-        """Render current scene"""
-        bpy.context.scene.render.filepath = filepath
-        bpy.ops.render.render(write_still=True)
-        return {"ok": True, "filepath": filepath}
-
-# Create WebView with API
-webview = AuroraView(
-    url="http://localhost:3000",
-    api=BlenderAPI()
-)
-webview.show()
+def unregister_tools(adapter):
+    adapter.unregister_panel("EXAMPLE_PT_transform")
 ```
 
-```javascript
-// JavaScript side
-const sel = await auroraview.api.get_selected_objects();
-console.log('Selected:', sel.objects);
+Keep draw callbacks short and use their current context. Use Blender properties
+for editing and operators for actions. Remove consumer panels when their add-on
+is disabled; the adapter also tracks its registered panels for cleanup.
 
-await auroraview.api.create_cube({ name: 'MyCube', size: 3.0 });
-await auroraview.api.set_location({ name: 'MyCube', x: 2, y: 0, z: 1 });
+## Optional HTML tools
 
-// Render
-await auroraview.api.render_image({ filepath: '/tmp/my_render.png' });
-```
+The add-on's
+[consumer guide](https://github.com/try-auroraview/auroraview-blender/blob/main/docs/consumer-tools.md)
+uses `BlenderSession.open(..., configure=configure)` to bind public Core calls
+before showing a WebView. The session installs a deferred main-thread call
+dispatcher; Core retains the JavaScript Promise and RPC protocol.
 
-## Blender Operator
+This route requires the owner-thread RPC/lifecycle contract tracked in
+[Core PR #497](https://github.com/try-auroraview/auroraview/pull/497).
+Read the adapter's
+[Core compatibility contract](https://github.com/try-auroraview/auroraview-blender/blob/main/docs/core-compatibility.md)
+for the required source build. This guide establishes no compatible released
+Core version. Installing an arbitrary released wheel is insufficient.
 
-Create a Blender operator to launch the tool:
+The Windows floating route remains experimental and needs actual WebView
+acceptance. Linux/macOS background startup is rejected by this route. The
+separate GTK experiment is not enabled by installing the Blender add-on.
 
-```python
-import bpy
-from auroraview import AuroraView
+## Thread and lifecycle ownership
 
-class AURORAVIEW_OT_launch_tool(bpy.types.Operator):
-    bl_idname = "auroraview.launch_tool"
-    bl_label = "Launch AuroraView Tool"
-    bl_description = "Launch the AuroraView web tool"
+- Register host classes and timers, start sessions and access `bpy` on Blender's
+  main thread. Worker threads may enqueue work; they must not call host APIs
+- Never block Blender's main thread waiting for work that needs that thread.
+  Keep host callbacks bounded; a JavaScript timeout does not undo host mutations
+- Bind host commands before asynchronous WebView startup. Use the add-on's
+  `configure` hook instead of registering native callbacks from a foreign thread
+- Disable/file-load/reload cleanup must discard stale queued work, remove owned
+  host registrations and request closure of owned views. A close request is
+  distinct from native completion; poll Core's `wait(0)` without blocking Blender
 
-    _webview = None
+Blender's
+[Python threading guidance](https://docs.blender.org/api/main/info_gotchas_threading.html)
+places limits on persistent Python threads. Main-thread dispatch alone does not
+certify a long-lived WebView callback thread. Native sidebar tools need no
+WebView worker thread.
 
-    def execute(self, context):
-        if AURORAVIEW_OT_launch_tool._webview is None:
-            AURORAVIEW_OT_launch_tool._webview = AuroraView(
-                url="http://localhost:3000",
-                api=BlenderAPI()
-            )
-        AURORAVIEW_OT_launch_tool._webview.show()
-        return {'FINISHED'}
+## Compatibility and verification
 
-def menu_func(self, context):
-    self.layout.operator(AURORAVIEW_OT_launch_tool.bl_idname)
+Core's existing `BlenderDispatcherBackend`, public imports and automatic host
+detection remain available as a legacy compatibility path. They are not the
+native panel API, and detection alone does not establish safe native rendering
+or cleanup. This documentation migration does not change discovery precedence.
 
-def register():
-    bpy.utils.register_class(AURORAVIEW_OT_launch_tool)
-    bpy.types.VIEW3D_MT_view.append(menu_func)
-
-def unregister():
-    bpy.types.VIEW3D_MT_view.remove(menu_func)
-    bpy.utils.unregister_class(AURORAVIEW_OT_launch_tool)
-
-if __name__ == "__main__":
-    register()
-```
-
-## Add-on Structure
-
-Create a proper Blender add-on:
-
-```
-my_addon/
-├── __init__.py
-├── api.py
-└── operators.py
-```
-
-**`__init__.py`:**
-
-```python
-bl_info = {
-    "name": "AuroraView Tool",
-    "author": "Your Name",
-    "version": (1, 0, 0),
-    "blender": (3, 0, 0),
-    "location": "View3D > View > AuroraView Tool",
-    "description": "Web-based tool using AuroraView",
-    "category": "3D View",
-}
-
-from . import operators
-
-def register():
-    operators.register()
-
-def unregister():
-    operators.unregister()
-```
-
-## Thread Safety
-
-AuroraView provides **automatic** thread safety for Blender integration. Blender requires all `bpy` operations to run on the main thread, which AuroraView handles via `bpy.app.timers`.
-
-::: tip Zero Configuration
-Since `dcc_mode="auto"` is the default, AuroraView automatically detects Blender and enables thread safety. No configuration needed!
-:::
-
-### Automatic Thread Safety (Default)
-
-Just use AuroraView normally - thread safety is automatic:
-
-```python
-from auroraview import WebView
-import bpy
-
-# Thread safety is automatically enabled when Blender is detected
-webview = WebView(
-    title="Blender Tool",
-    url="http://localhost:3000",
-    # dcc_mode="auto" is the default - no need to specify!
-)
-
-@webview.on("create_mesh")
-def handle_create(data):
-    # Automatically runs on Blender main thread!
-    mesh_type = data.get("type", "cube")
-    if mesh_type == "cube":
-        bpy.ops.mesh.primitive_cube_add()
-    elif mesh_type == "sphere":
-        bpy.ops.mesh.primitive_uv_sphere_add()
-    return {"ok": True, "object": bpy.context.active_object.name}
-
-@webview.on("get_selection")
-def handle_selection(data):
-    selected = [obj.name for obj in bpy.context.selected_objects]
-    return {"selection": selected, "count": len(selected)}
-```
-
-### Manual Thread Safety with Decorators
-
-```python
-from auroraview import WebView
-from auroraview.utils import dcc_thread_safe, dcc_thread_safe_async
-
-webview = WebView(title="Blender Tool", url="http://localhost:3000")
-
-@webview.on("render_frame")
-@dcc_thread_safe  # Blocks until render complete
-def handle_render(data):
-    filepath = data.get("filepath", "/tmp/render.png")
-    bpy.context.scene.render.filepath = filepath
-    bpy.ops.render.render(write_still=True)
-    return {"ok": True, "filepath": filepath}
-
-@webview.on("refresh_view")
-@dcc_thread_safe_async  # Fire-and-forget
-def handle_refresh(data):
-    for area in bpy.context.screen.areas:
-        area.tag_redraw()
-```
-
-### Using `run_on_main_thread` Directly
-
-```python
-from auroraview.utils import run_on_main_thread, run_on_main_thread_sync
-
-# Fire-and-forget
-def deselect_all():
-    bpy.ops.object.select_all(action='DESELECT')
-
-run_on_main_thread(deselect_all)
-
-# Blocking with return value
-def get_scene_objects():
-    return [obj.name for obj in bpy.data.objects]
-
-objects = run_on_main_thread_sync(get_scene_objects)
-print(f"Scene objects: {objects}")
-```
-
-## Timer-based Updates
-
-For real-time sync with Blender:
-
-```python
-import bpy
-from auroraview import AuroraView
-
-class BlenderSyncTool:
-    def __init__(self):
-        self.webview = AuroraView(url="http://localhost:3000")
-        self._last_selection = []
-        bpy.app.timers.register(self._check_selection, persistent=True)
-
-    def _check_selection(self):
-        current = [obj.name for obj in bpy.context.selected_objects]
-        if current != self._last_selection:
-            self._last_selection = current
-            self.webview.emit("selection_changed", {"objects": current})
-        return 0.1  # Check every 100ms
-
-    def show(self):
-        self.webview.show()
-
-# Usage
-tool = BlenderSyncTool()
-tool.show()
-```
+Headless imports and real add-on registration/scheduling checks establish only
+the behavior they exercise. Visible HTML rendering, JS/Python RPC, multiple
+windows, close/reopen and unload/exit require separate tests against a declared
+Blender/OS/Core combination. Consult the adapter's
+[validation record](https://github.com/try-auroraview/auroraview-blender/blob/main/docs/validation.md)
+for current evidence and remaining gates.

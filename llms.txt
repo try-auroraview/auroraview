@@ -35,7 +35,7 @@ Local development and CI use the same `just` tasks to avoid drift.
 ## Tech Stack
 
 - **Windows**: WebView2 (Chromium Edge) + Rust (windows-rs, webview2-com), embedded as child HWND into Qt containers; UI operations run on STA/UI thread.
-- **Cross-DCC**: Maya/3ds Max/Houdini/Nuke use Qt hosts; Blender uses floating tool windows.
+- **Cross-DCC**: Maya/3ds Max/Houdini/Nuke use Qt hosts; Blender integration is maintained in [auroraview-blender](https://github.com/try-auroraview/auroraview-blender), with native add-on tools and an optional experimental floating WebView.
 - **Python**: PyO3 + maturin, ABI3 wheel (CPython 3.7–3.13).
 - **Concurrency**: Qt owns the event loop; Rust marshals UI work to the creation thread via task queues.
 - **Standalone**: Retains wry/tao mode for development; may migrate to Win32 + WebView2 top-level window later.
@@ -131,7 +131,7 @@ window.auroraview.trigger('event_name', data);
 | 3ds Max (Qt) | Qt Native (QtWebView) | QDockWidget |
 | Houdini (PySide2/Qt5) | Qt Native (QtWebView) | QDockWidget |
 | Nuke (PySide2/Qt) | Qt Native (QtWebView) | Custom Panel |
-| Blender | Standalone / Floating tool window | N/A |
+| Blender | [Independent add-on](https://github.com/try-auroraview/auroraview-blender); optional experimental floating WebView | Native Blender controls use the sidebar; HTML region embedding is unimplemented |
 | Unreal Engine | HWND (AuroraView) | via HWND API |
 
 ## File Drop (capture_file_drop)
