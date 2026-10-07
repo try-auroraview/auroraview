@@ -110,6 +110,20 @@ jobs:
           set -o pipefail
           vx just hosted-gtk-toolchain-info development 2>&1 | tee hosted-gtk-evidence/toolchain-development.txt
 
+      # Embedding tests need the managed Python's relocated shared library.
+      # Apply compiler/loader paths only after the production wheel is finished.
+      - name: Resolve and verify the development Python shared library
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just pin-hosted-gtk-python-environment 2>&1 | tee hosted-gtk-evidence/python-embedding-setup.txt
+
+      - name: Verify the embedding environment reaches vx and just
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just verify-hosted-gtk-python-environment 2>&1 | tee hosted-gtk-evidence/python-embedding-verify.txt
+
       - name: Compile hosted Rust test targets without execution deadline
         shell: bash
         run: |
@@ -169,6 +183,8 @@ jobs:
           printf '%s\n' \
             'Production wheel and source format compiler: Rust 1.90.0.' \
             'Development test/clippy compiler: Rust 1.95.0 for existing dev-dependencies.' \
+            'Embedding-library preflight verifies the managed Python library and search paths only.' \
+            'Rust linking and bounded execution require their own successful step logs.' \
             'Lane selection alone does not prove the wheel or tests completed; inspect step logs.' \
             'Generated metadata or resolver drift makes this a diagnostic run, not an exact-head pass.' \
             'Native Blender/WebKit rendering: not run in this job.' \

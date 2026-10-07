@@ -2217,8 +2217,8 @@ test-hosted-gtk-python-regression:
 lint-hosted-gtk-source:
     vx just unsafe-audit
     vx rustup run 1.95.0 cargo clippy --lib --test hosted_gtk_queue --test hosted_gtk_callbacks --test hosted_gtk_pump --features "experimental-hosted-gtk,test-helpers" -- -D warnings
-    vx uv run --no-sync ruff check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py scripts/ci/pin_hosted_gtk_rust.py
-    vx uv run --no-sync ruff format --check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py scripts/ci/pin_hosted_gtk_rust.py
+    vx uv run --no-sync ruff check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py scripts/ci/pin_hosted_gtk_rust.py scripts/ci/pin_hosted_gtk_python.py
+    vx uv run --no-sync ruff format --check tests/hosted_gtk_source scripts/verify_hosted_gtk_wheel.py scripts/ci/pin_hosted_gtk_rust.py scripts/ci/pin_hosted_gtk_python.py
 
 # Run before selecting the development compiler so formatting stays on the MSRV.
 [linux]
@@ -2255,3 +2255,12 @@ pin-hosted-gtk-rust-environment lane="production":
 [linux]
 verify-hosted-gtk-wheel-environment:
     vx uv run --no-sync python scripts/ci/pin_hosted_gtk_rust.py production --verify-environment
+
+# CI-only Python embedding paths; run after the production wheel has been built.
+[linux]
+pin-hosted-gtk-python-environment:
+    vx python scripts/ci/pin_hosted_gtk_python.py
+
+[linux]
+verify-hosted-gtk-python-environment:
+    vx python scripts/ci/pin_hosted_gtk_python.py --verify-environment
