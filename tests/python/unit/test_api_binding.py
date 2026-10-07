@@ -120,8 +120,8 @@ class TestApiBindingMixin:
 
         # Should have the latest function
         assert webview._bound_functions["api.func"] == func_v2
-        # on() should be called twice
-        assert webview._core.on.call_count == 2
+        # The existing native callback resolves the latest Python function.
+        assert webview._core.on.call_count == 1
 
     def test_bind_call_skips_when_allow_rebind_false(self):
         """Test bind_call skips when allow_rebind=False and already bound."""

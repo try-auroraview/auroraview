@@ -40,10 +40,12 @@ Example:
 """
 
 import logging
+import threading
 from typing import Any, Callable, ClassVar, Optional, Set
 
 from auroraview.utils.timer_backends import (
     QtTimerBackend,
+    ThreadTimerBackend,
     TimerBackend,
     get_available_backend,
 )
@@ -116,7 +118,16 @@ class EventTimer:
         self._check_validity = check_window_validity
         self._backend = backend  # Can be None, will be set in start()
         self._running = False
+        self._starting = False
+        self._processing_events = False
+        self._close_notified = False
+        self._close_notifying = False
+        self._cleanup_active = False
+        self._cleanup_lock = threading.Lock()
+        self._close_observed = False
         self._timer_handle: Optional[Any] = None  # Handle returned by backend.start()
+        self._owner_thread_id: Optional[int] = None
+        self._notification_thread_id = threading.get_ident()
         self._close_callbacks: "list[Callable[[], None]]" = []
         self._tick_callbacks: "list[Callable[[], None]]" = []
         self._last_valid = True
@@ -136,7 +147,7 @@ class EventTimer:
         Raises:
             RuntimeError: If timer is already running or no timer backend available
         """
-        if self._running:
+        if self._running or self._starting:
             raise RuntimeError("Timer is already running")
 
         # Auto-select backend if not provided
@@ -148,15 +159,22 @@ class EventTimer:
                 )
 
         # Start the timer using the backend
+        self._starting = True
         try:
             self._timer_handle = self._backend.start(self._interval_ms, self._tick)
+            self._owner_thread_id = threading.get_ident()
+            self._notification_thread_id = self._owner_thread_id
             self._running = True
+            self._close_notified = False
+            self._close_observed = False
             logger.info(
                 f"EventTimer started with {self._backend.get_name()} backend (interval={self._interval_ms}ms)"
             )
         except Exception as e:
             logger.error(f"Failed to start timer with {self._backend.get_name()} backend: {e}")
             raise RuntimeError(f"Failed to start timer: {e}") from e
+        finally:
+            self._starting = False
 
     def stop(self) -> None:
         """Stop the timer and cleanup resources.
@@ -164,10 +182,13 @@ class EventTimer:
         This stops the timer backend and clears the webview reference
         to prevent circular references.
         """
+        if self._starting:
+            raise RuntimeError("EventTimer startup is still in progress")
         if not self._running:
             return
 
-        self._running = False
+        if not self.can_cleanup_from_current_thread():
+            raise RuntimeError("EventTimer must be stopped on its owning thread")
 
         # Stop the timer using the backend
         if self._backend and self._timer_handle is not None:
@@ -176,8 +197,11 @@ class EventTimer:
                 logger.info(f"{self._backend.get_name()} timer stopped")
             except Exception as e:
                 logger.error(f"Failed to stop {self._backend.get_name()} timer: {e}")
+                raise RuntimeError(f"Failed to stop timer: {e}") from e
 
+        self._running = False
         self._timer_handle = None
+        self._owner_thread_id = None
 
         # Clear webview reference to prevent circular references
         # This is important for proper cleanup in DCC environments
@@ -185,19 +209,94 @@ class EventTimer:
 
         logger.info("EventTimer stopped and cleaned up")
 
-    def cleanup(self) -> None:
+    def cleanup(self) -> bool:
         """Cleanup all resources and references.
 
         This method should be called when the EventTimer is no longer needed.
         It stops the timer and clears all references to prevent memory leaks.
+        Returns False immediately if an outer cleanup/notification is still
+        active, including reentry from a close observer. No lock is held while
+        invoking backend operations or user callbacks. Returns True only after
+        stop, all close observers, and reference cleanup have finished. Observer
+        return values are ignored; they are not close vetoes or completion flags.
         """
-        self.stop()
+        with self._cleanup_lock:
+            if self._cleanup_active or self._close_notifying:
+                return False
+            self._cleanup_active = True
+        try:
+            if getattr(self._webview, "_native_close_observed", False) is True:
+                self._observe_close()
+            self.stop()
+            if self._close_observed and not self._notify_close():
+                return False
+            self._webview = None
+            self._close_callbacks.clear()
+            self._tick_callbacks.clear()
+            logger.info("EventTimer cleanup complete")
+            return True
+        finally:
+            with self._cleanup_lock:
+                self._cleanup_active = False
 
-        # Clear all callbacks
-        self._close_callbacks.clear()
-        self._tick_callbacks.clear()
+    @property
+    def owner_thread_id(self) -> Optional[int]:
+        """Thread that successfully started the native timer, if any."""
+        return self._owner_thread_id
 
-        logger.info("EventTimer cleanup complete")
+    @property
+    def processing_events(self) -> bool:
+        """True while wrapper event processing can request deferred cleanup."""
+        return self._processing_events
+
+    def _notify_close(self) -> bool:
+        with self._cleanup_lock:
+            if self._close_notified:
+                return True
+            if self._close_notifying:
+                return False
+            if not self.can_cleanup_from_current_thread():
+                raise RuntimeError("Close notification must run on the timer's owning thread")
+            self._close_notifying = True
+            callbacks = list(self._close_callbacks)
+        completed = False
+        try:
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception as exc:
+                    logger.error("Error in close callback: %s", exc, exc_info=True)
+            completed = True
+            return True
+        finally:
+            with self._cleanup_lock:
+                # The once-only reentry guard does not imply completion.
+                self._close_notified = completed
+                self._close_notifying = False
+
+    def _observe_close(self) -> None:
+        """Retain the close event until owner-side cleanup can notify it once."""
+        self._close_observed = True
+
+    def can_cleanup_from_current_thread(self) -> bool:
+        """Whether cleanup can safely touch this timer's backend now."""
+        if self._starting or self._close_notifying:
+            return False
+        # stop() releases the native handle, but an observed close callback
+        # still belongs to that host thread until notification has completed.
+        if (
+            self._close_observed
+            and not self._close_notified
+            and type(self._backend) is not ThreadTimerBackend
+            and self._notification_thread_id != threading.get_ident()
+        ):
+            return False
+        if not self._running and self._timer_handle is None:
+            return True
+        # ThreadTimerBackend.stop only sets threading.Event and never joins.
+        if type(self._backend) is ThreadTimerBackend:
+            return True
+        return self._owner_thread_id == threading.get_ident()
 
     def on_close(self, callback: Callable[[], None]) -> Callable[[], None]:
         """Register callback for window close event.
@@ -312,11 +411,28 @@ class EventTimer:
         if not self._running:
             return
 
+        webview = self._webview
+        if webview is not None and getattr(webview, "_close_requested", False) is True:
+            # Do not invoke user tick callbacks after close/unload. A Qt timer
+            # reaches this path on its actual owner thread, finishing cleanup
+            # that a foreign close deliberately left pending.
+            cleanup = getattr(webview, "_cleanup_auto_timer", None)
+            if cleanup is not None:
+                cleanup()
+            elif self.can_cleanup_from_current_thread():
+                self.cleanup()
+            return
+
         self._tick_count += 1
 
         try:
             # Call tick callbacks
             for callback in self._tick_callbacks:
+                if (
+                    self._webview is None
+                    or getattr(self._webview, "_close_requested", False) is True
+                ):
+                    return
                 try:
                     callback()
                 except Exception as e:
@@ -332,6 +448,7 @@ class EventTimer:
                 # Choose event-processing strategy based on timer backend.
                 # Qt backend uses IPC-only mode if available, others use full process_events
                 is_qt_backend = isinstance(self._backend, QtTimerBackend)
+                self._processing_events = True
                 if is_qt_backend and hasattr(self._webview, "process_events_ipc_only"):
                     # Qt hosts own the native event loop.
                     # In this mode we only drain AuroraView's internal IPC queue
@@ -342,12 +459,20 @@ class EventTimer:
                     # which drives the native message pump directly.
                     should_close = self._webview.process_events()
             except RuntimeError as e:
-                if "not initialized" in str(e):
+                if "not initialized" in str(e) and not self._close_observed:
                     # WebView not yet initialized, skip this tick silently
                     return
                 logger.error(f"Error processing events: {e}", exc_info=True)
             except Exception as e:
                 logger.error(f"Error processing events: {e}", exc_info=True)
+            finally:
+                self._processing_events = False
+                # The wrapper may observe should_close, then raise while
+                # sending a close request. Preserve the observed event rather
+                # than relying on the interrupted method's return value.
+                if getattr(webview, "_native_close_observed", False) is True:
+                    self._observe_close()
+                should_close = should_close or self._close_observed
 
             # Check window validity (Windows only, gated by `_is_core_ready`).
             #
@@ -357,7 +482,7 @@ class EventTimer:
             # `is_ready` reported True. Delegating entirely to
             # `_is_core_ready()` keeps :class:`WebView` as the single owner
             # of "what does ready mean".
-            if self._check_validity:
+            if self._check_validity and not should_close:
                 try:
                     if not self._is_core_ready():
                         # WebView not yet initialized, skip validity check
@@ -379,21 +504,13 @@ class EventTimer:
             # Handle close event
             if should_close:
                 logger.info("Close event detected")
-                # Stop timer FIRST to prevent further ticks
-                self._running = False
-                if self._timer_handle is not None and self._backend is not None:
-                    try:
-                        self._backend.stop(self._timer_handle)
-                        self._timer_handle = None
-                    except Exception as e:
-                        logger.error(f"Error stopping timer: {e}", exc_info=True)
-
-                # Then call close callbacks
-                for callback in self._close_callbacks:
-                    try:
-                        callback()
-                    except Exception as e:
-                        logger.error(f"Error in close callback: {e}", exc_info=True)
+                # Cleanup orders stop -> once-only notification -> release.
+                # If stop fails, the observation and callbacks survive retry.
+                self._observe_close()
+                self.cleanup()
+                cleanup = getattr(webview, "_cleanup_auto_timer", None)
+                if cleanup is not None:
+                    cleanup()
 
         except Exception as e:
             logger.error(f"Unexpected error in timer tick: {e}", exc_info=True)

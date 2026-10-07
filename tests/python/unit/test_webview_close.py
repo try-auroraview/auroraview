@@ -28,6 +28,8 @@ def test_close_prefers_async_core_when_present():
     webview = WebView.__new__(WebView)
     webview._core = DummyCore("core")
     webview._async_core = DummyCore("async")
+    webview._track_core_thread(webview._core)
+    webview._track_core_thread(webview._async_core)
     webview._async_core_lock = threading.Lock()
     webview._show_thread = None
     webview._close_requested = False

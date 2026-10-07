@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 from typing import TYPE_CHECKING, Optional, Union
 
 try:
@@ -352,27 +351,17 @@ class WebViewFactoryMixin:
 
         # Create Python wrapper
         instance = cls.__new__(cls)
-        instance._core = core
-        instance._parent = parent_hwnd
-        instance._mode = "child"
-        instance._bridge = None
-        instance._auto_timer = None
-        instance._show_thread = None
-        instance._async_core = None
-        instance._async_core_lock = threading.Lock()
-        instance._close_requested = False
-        instance._event_processor = None
-
-        instance._post_eval_js_hook = None
-        instance._config = {
-            "title": title,
-            "width": width,
-            "height": height,
-            "url": url,
-            "html": html,
-            "asset_root": asset_root,
-            "debug": debug,
-        }
+        instance._init_embedded_core(
+            core,
+            parent_hwnd=parent_hwnd,
+            title=title,
+            width=width,
+            height=height,
+            url=url,
+            html=html,
+            asset_root=asset_root,
+            debug=debug,
+        )
 
         # Configure asset root
         if asset_root:

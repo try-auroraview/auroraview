@@ -38,6 +38,17 @@ class WebViewWindowMixin:
     _width: int
     _height: int
 
+    def _window_command(self, name: str, *args: Any) -> None:
+        """Window controls require native owner support or a proxy operation."""
+        target = self._command_target()
+        method = getattr(target, name, None)
+        if method is None:
+            if self._is_core_owner(self._get_active_core()):
+                logger.warning("%s not supported by current backend", name)
+                return
+            raise RuntimeError(f"{name} is unavailable on this WebView thread/backend")
+        method(*args)
+
     def move(self, x: int, y: int) -> None:
         """Move the window to a new position.
 
@@ -48,10 +59,7 @@ class WebViewWindowMixin:
         Example:
             >>> webview.move(100, 50)
         """
-        if hasattr(self._core, "move_to"):
-            self._core.move_to(x, y)
-        else:
-            logger.warning("move() not supported by current backend")
+        self._window_command("move_to", x, y)
         self._x = x
         self._y = y
 
@@ -65,40 +73,25 @@ class WebViewWindowMixin:
         Example:
             >>> webview.resize(1024, 768)
         """
-        if hasattr(self._core, "resize"):
-            self._core.resize(width, height)
-        else:
-            logger.warning("resize() not supported by current backend")
+        self._window_command("resize", width, height)
         self._width = width
         self._height = height
 
     def minimize(self) -> None:
         """Minimize the window."""
-        if hasattr(self._core, "minimize"):
-            self._core.minimize()
-        else:
-            logger.warning("minimize() not supported by current backend")
+        self._window_command("minimize")
 
     def maximize(self) -> None:
         """Maximize the window."""
-        if hasattr(self._core, "maximize"):
-            self._core.maximize()
-        else:
-            logger.warning("maximize() not supported by current backend")
+        self._window_command("maximize")
 
     def restore(self) -> None:
         """Restore the window from minimized/maximized state."""
-        if hasattr(self._core, "restore"):
-            self._core.restore()
-        else:
-            logger.warning("restore() not supported by current backend")
+        self._window_command("restore")
 
     def toggle_fullscreen(self) -> None:
         """Toggle fullscreen mode."""
-        if hasattr(self._core, "toggle_fullscreen"):
-            self._core.toggle_fullscreen()
-        else:
-            logger.warning("toggle_fullscreen() not supported by current backend")
+        self._window_command("toggle_fullscreen")
 
     def set_always_on_top(self, on_top: bool = True) -> None:
         """Set whether the window should always be on top.
@@ -106,24 +99,16 @@ class WebViewWindowMixin:
         Args:
             on_top: True to keep window on top, False otherwise
         """
-        if hasattr(self._core, "set_always_on_top"):
-            self._core.set_always_on_top(on_top)
-        else:
-            logger.warning("set_always_on_top() not supported by current backend")
+        self._window_command("set_always_on_top", on_top)
+        self._always_on_top = on_top
 
     def hide(self) -> None:
         """Hide the window without closing it."""
-        if hasattr(self._core, "hide"):
-            self._core.hide()
-        else:
-            logger.warning("hide() not supported by current backend")
+        self._window_command("hide")
 
     def focus(self) -> None:
         """Bring the window to the front and give it focus."""
-        if hasattr(self._core, "focus"):
-            self._core.focus()
-        else:
-            logger.warning("focus() not supported by current backend")
+        self._window_command("focus")
 
     @property
     def width(self) -> int:
