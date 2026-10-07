@@ -5,7 +5,7 @@ set -euo pipefail
 for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
     if [[ -f "$apt_source" ]]; then
         sudo sed -i -E \
-            's|https?://azure\.archive\.ubuntu\.com/ubuntu/?([[:space:]]|$)|https://archive.ubuntu.com/ubuntu\1|g' \
+            's#https?://azure\.archive\.ubuntu\.com/ubuntu/?([[:space:]]|$)#https://archive.ubuntu.com/ubuntu\1#g' \
             "$apt_source"
     fi
 done
