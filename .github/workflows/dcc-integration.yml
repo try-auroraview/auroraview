@@ -51,6 +51,8 @@ jobs:
         with:
           python-version: '3.11'
           cache-key-suffix: 'dcc-build'
+          # The wheel action owns build prerequisites; do not build editable Core first.
+          install-dependencies: 'false'
 
       - name: Build wheel
         uses: ./.github/actions/build-wheel
