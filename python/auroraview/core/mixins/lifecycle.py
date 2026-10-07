@@ -164,7 +164,9 @@ class WebViewLifecycleMixin:
             return
         proxy = getattr(self, "_core_proxies", {}).get(core_id)
         try:
-            if not self._is_core_owner(core):
+            if getattr(self, "_host_callback_gate", None) is not None or not self._is_core_owner(
+                core
+            ):
                 if not _request_close_via_channel(proxy):
                     raise RuntimeError("Could not send WebView close through its cached proxy")
             else:
@@ -384,6 +386,18 @@ class WebViewLifecycleMixin:
         """
         self._show_non_blocking()
 
+    def show_hosted(self, runtime: Any) -> None:
+        """Create a private experimental Linux view on the host's main thread.
+
+        ``auroraview.hosted.HostRuntime`` owns the shared pump. This never starts
+        a worker or an outer event loop and requires an explicitly opted-in build.
+        """
+        from auroraview.hosted import HostRuntime
+
+        if not isinstance(runtime, HostRuntime):
+            raise TypeError("runtime must be an auroraview.hosted.HostRuntime")
+        runtime.show(self)
+
     def _show_non_blocking(self) -> None:
         """Start a Windows owner thread; other platforms require a host loop.
 
@@ -570,6 +584,9 @@ class WebViewLifecycleMixin:
             ...     print("Timeout waiting for WebView")
         """
         event = getattr(self, "_closed_event", None)
+        if event is not None and getattr(self, "_host_runtime", None) is not None and timeout != 0:
+            if threading.current_thread() is threading.main_thread() and not event.is_set():
+                raise RuntimeError("The host main thread must poll wait(0), never wait on itself")
         if event is None:
             return not getattr(self, "_is_running", False) and not self.close_pending
         if threading.current_thread() is self._show_thread and not event.is_set():
@@ -607,6 +624,9 @@ class WebViewLifecycleMixin:
         if lock is None:
             lock = self._lifecycle_lock = threading.RLock()
         errors = []
+        detached_calls = None
+        detached_events = None
+        result_proxy = None
         with lock:
             if not hasattr(self, "_close_sent"):
                 self._close_sent = set()
@@ -614,10 +634,46 @@ class WebViewLifecycleMixin:
                 self._close_send_done = threading.Event()
                 self._close_send_done.set()
             if not getattr(self, "_close_requested", False):
-                self._cancel_event_callbacks()
-                self._cancel_pending_calls("WebView closed")
+                # First publish all effective admission fences. Detaching keeps
+                # user references alive until every bookkeeping lock is released.
                 self._close_requested = True
-                self._teardown_telemetry()
+                detached_calls = self._close_call_admission("WebView closed")
+                detached_events = self._detach_event_callbacks()
+                with self._async_core_lock:
+                    active_core = self._async_core
+                    if active_core is None:
+                        active_core = self._core
+                    result_proxy = getattr(self, "_core_proxies", {}).get(id(active_core))
+
+        if detached_calls is not None:
+            # Normal emit checks _close_requested. Use only the already-cached
+            # send-safe proxy for best-effort cancellation while its channel is
+            # still open. Native-policy retirement must never reopen that channel.
+            gate = getattr(self, "_host_callback_gate", None)
+            if result_proxy is not None and (gate is None or gate()):
+                for call_id in detached_calls.values():
+                    if call_id:
+                        try:
+                            result_proxy.emit(
+                                "__auroraview_call_result",
+                                {
+                                    "id": call_id,
+                                    "ok": False,
+                                    "error": {
+                                        "name": "CancelledError",
+                                        "message": "WebView closed",
+                                    },
+                                },
+                            )
+                        except Exception:
+                            logger.debug("Close cancellation could not be delivered", exc_info=True)
+            self._release_event_callbacks()
+            # Signal/event finalizers may reenter request_close or held dispatch.
+            # All gates are closed, and no lifecycle/call/event/signal lock is held.
+            del detached_events, detached_calls
+            self._teardown_telemetry()
+
+        with lock:
             with self._async_core_lock:
                 cores = [self._async_core, self._core]
             seen = set()

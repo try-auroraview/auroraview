@@ -208,6 +208,9 @@ winapi = "0.3.9"
 webview2 = { version = "0.1.4", optional = true }
 webview2-com = { version = "0.39", optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18.2", optional = true }
+
 [dev-dependencies]
 criterion = "0.8"
 tempfile = "3.14"
@@ -233,6 +236,9 @@ opt-level = 0
 [features]
 # Default: Core features without Python bindings (for CLI usage)
 default = ["templates", "url-utils"]
+
+# Private opt-in prototype. Native Blender acceptance is still required.
+experimental-hosted-gtk = ["python-bindings", "dep:gtk"]
 
 # Python bindings (for Python wheel)
 python-bindings = ["pyo3", "url-utils", "auroraview-signals/python", "telemetry-python", "sentry-python"]

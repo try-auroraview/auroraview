@@ -106,13 +106,9 @@ impl WebViewProxy {
             script
         );
 
-        self.js_callback_manager
-            .register_callback_with_timeout(callback_id, callback, timeout_ms);
-
-        self.message_queue.push(WebViewMessage::EvalJsAsync {
-            script: script.to_string(),
-            callback_id,
-        });
+        self.js_callback_manager.enqueue_callback(
+            &self.message_queue, script.to_string(), callback_id, callback, timeout_ms,
+        ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
         Ok(())
     }
@@ -143,8 +139,8 @@ impl WebViewProxy {
     fn load_url(&self, url: &str) -> PyResult<()> {
         tracing::debug!("[WebViewProxy] Loading URL: {}", url);
         self.message_queue
-            .push(WebViewMessage::LoadUrl(url.to_string()));
-        Ok(())
+            .try_push(WebViewMessage::LoadUrl(url.to_string()))
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
     /// Load HTML content in the WebView (thread-safe)
@@ -154,15 +150,15 @@ impl WebViewProxy {
     fn load_html(&self, html: &str) -> PyResult<()> {
         tracing::debug!("[WebViewProxy] Loading HTML content");
         self.message_queue
-            .push(WebViewMessage::LoadHtml(html.to_string()));
-        Ok(())
+            .try_push(WebViewMessage::LoadHtml(html.to_string()))
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
     /// Reload the current page (thread-safe)
     fn reload(&self) -> PyResult<()> {
         tracing::debug!("[WebViewProxy] Reloading page");
-        self.message_queue.push(WebViewMessage::Reload);
-        Ok(())
+        self.message_queue.try_push(WebViewMessage::Reload)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
     /// Close the WebView window (thread-safe)
@@ -181,9 +177,17 @@ impl WebViewProxy {
 
     /// Check if the proxy is valid (message queue is available)
     fn is_valid(&self) -> bool {
-        // The proxy is always valid as long as it exists
-        // The message queue might be disconnected but that's handled in push()
-        true
+        !self.message_queue.is_shutdown()
+    }
+
+    /// Read callback admission without GTK access, Python callbacks, or locks.
+    /// Safe while the native Core/HostRuntime already has an active PyO3 borrow.
+    fn callbacks_allowed(&self) -> bool {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return self.message_queue.hosted_ipc_allowed();
+        }
+        !self.message_queue.is_shutdown()
     }
 
     fn __repr__(&self) -> String {

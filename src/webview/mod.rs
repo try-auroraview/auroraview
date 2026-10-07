@@ -5,6 +5,10 @@
 // Module declarations - Python bindings
 #[cfg(feature = "python-bindings")]
 mod core;
+#[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+pub(crate) mod hosted_gtk;
+#[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+pub mod hosted_pump;
 #[cfg(feature = "python-bindings")]
 mod proxy;
 #[cfg(feature = "python-bindings")]

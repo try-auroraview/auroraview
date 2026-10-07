@@ -260,6 +260,12 @@ impl AuroraView {
 
     /// Create WebView for standalone mode (creates its own window)
     fn show_window(&self, py: Python<'_>) -> PyResult<()> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "A hosted WebView cannot enter a standalone event loop",
+            ));
+        }
         let title = self.config.borrow().title.clone();
         tracing::info!("Showing WebView (standalone mode): {}", title);
 
@@ -488,6 +494,11 @@ impl AuroraView {
     /// Python callbacks on the main thread while the background thread
     /// handles the actual WebView event loop.
     fn process_ipc_only(&self) -> PyResult<bool> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            // One shared HostRuntime pumps all views; per-view calls only observe.
+            return Ok(self.message_queue.hosted_state() == 3);
+        }
         // Use try_borrow to avoid panic during initialization
         match self.inner.try_borrow() {
             Ok(inner_ref) => {
@@ -539,6 +550,12 @@ impl AuroraView {
         let normalized = normalize_url(url);
         tracing::info!("Loading URL: {} (normalized from: {})", normalized, url);
 
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return self.message_queue.try_push(WebViewMessage::LoadUrl(normalized))
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err);
+        }
+
         if let Some(webview) = self.inner.borrow_mut().as_mut() {
             webview
                 .load_url(&normalized)
@@ -561,6 +578,12 @@ impl AuroraView {
     /// Load HTML content in the WebView
     fn load_html(&self, html: &str) -> PyResult<()> {
         tracing::info!("Loading HTML content ({} bytes)", html.len());
+
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return self.message_queue.try_push(WebViewMessage::LoadHtml(html.to_string()))
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err);
+        }
 
         if let Some(webview) = self.inner.borrow_mut().as_mut() {
             webview
@@ -589,6 +612,11 @@ impl AuroraView {
 
     /// Reload the current page
     fn reload(&self) -> PyResult<()> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return self.message_queue.try_push(WebViewMessage::Reload)
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err);
+        }
         self.message_queue.push(WebViewMessage::Reload);
         Ok(())
     }
@@ -737,6 +765,10 @@ impl AuroraView {
     ///     >>> if webview.is_alive():
     ///     ...     webview.eval_js("console.log('Hello!')")
     fn is_alive(&self) -> PyResult<bool> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return Ok(self.message_queue.hosted_state() == 1);
+        }
         let inner = self.inner.borrow();
         if let Some(ref webview) = *inner {
             use crate::webview::lifecycle::LifecycleState;
@@ -765,6 +797,13 @@ impl AuroraView {
     ///     ...     webview.eval_js("console.log('Ready!')")
     #[getter]
     fn lifecycle_state(&self) -> PyResult<String> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        match self.message_queue.hosted_state() {
+            1 => return Ok("active".to_string()),
+            2 => return Ok("close_requested".to_string()),
+            3 => return Ok("destroyed".to_string()),
+            _ => {}
+        }
         let inner = self.inner.borrow();
         if let Some(ref webview) = *inner {
             use crate::webview::lifecycle::LifecycleState;
@@ -793,6 +832,12 @@ impl AuroraView {
     ///     >>> webview.reset()  # Clear old state
     ///     >>> webview.show()   # Show again
     fn reset(&self) -> PyResult<()> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Hosted views are single-use; construct a fresh WebView",
+            ));
+        }
         tracing::info!("[AuroraView::reset] Resetting WebView state for reuse");
 
         // Clear the inner WebViewInner

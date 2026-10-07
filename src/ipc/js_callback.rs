@@ -7,7 +7,7 @@
 //! Features:
 //! - Unique callback ID generation
 //! - Timeout mechanism for stale callbacks
-//! - Thread-safe concurrent access via DashMap
+//! - Lock-scoped ownership transfer; Python is never called or dropped under a lock
 
 use dashmap::DashMap;
 #[cfg(feature = "python-bindings")]
@@ -16,6 +16,10 @@ use pyo3::prelude::*;
 use pyo3::{Py, PyAny};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(feature = "python-bindings")]
+use std::collections::BTreeMap;
+#[cfg(feature = "python-bindings")]
+use std::sync::Mutex;
 #[cfg(feature = "python-bindings")]
 use std::time::Instant;
 
@@ -36,6 +40,16 @@ struct CallbackEntry {
     timeout_ms: u64,
 }
 
+#[cfg(feature = "python-bindings")]
+#[derive(Default)]
+struct CallbackState {
+    closed: bool,
+    pending: BTreeMap<u64, CallbackEntry>,
+    timeout_cursor: Option<u64>,
+    // A sweep must not chase new IDs forever while older entries expire.
+    timeout_high_water: Option<u64>,
+}
+
 /// Stored result for Future-style polling
 #[derive(Debug, Clone)]
 pub struct StoredResult {
@@ -45,7 +59,7 @@ pub struct StoredResult {
 
 /// JavaScript callback manager for async execution
 ///
-/// Uses DashMap for lock-free concurrent callback storage.
+/// Transfers callback ownership out of a mutex before invoking or dropping Python.
 /// Supports timeout mechanism for cleanup of stale callbacks.
 pub struct JsCallbackManager {
     /// Atomic counter for generating unique callback IDs
@@ -53,7 +67,7 @@ pub struct JsCallbackManager {
 
     /// Pending Python callbacks keyed by ID (with timeout metadata)
     #[cfg(feature = "python-bindings")]
-    pending_callbacks: Arc<DashMap<u64, CallbackEntry>>,
+    pending_callbacks: Mutex<CallbackState>,
 
     /// Stored results for Future-style polling (for eval_js_future)
     stored_results: Arc<DashMap<u64, StoredResult>>,
@@ -68,7 +82,7 @@ impl JsCallbackManager {
         Self {
             next_id: AtomicU64::new(1),
             #[cfg(feature = "python-bindings")]
-            pending_callbacks: Arc::new(DashMap::new()),
+            pending_callbacks: Mutex::new(CallbackState::default()),
             stored_results: Arc::new(DashMap::new()),
             default_timeout_ms: 5000,
         }
@@ -79,32 +93,60 @@ impl JsCallbackManager {
         self.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Register a Python callback for async JavaScript execution
+    /// Register a Python callback; false means shutdown has closed admission.
     #[cfg(feature = "python-bindings")]
-    pub fn register_callback(&self, id: u64, callback: Py<PyAny>) {
-        self.register_callback_with_timeout(id, callback, self.default_timeout_ms);
+    pub fn register_callback(&self, id: u64, callback: Py<PyAny>) -> bool {
+        self.register_callback_with_timeout(id, callback, self.default_timeout_ms)
     }
 
-    /// Register a Python callback with custom timeout
+    /// Register without dropping a rejected or replaced Python object under a lock.
     #[cfg(feature = "python-bindings")]
-    pub fn register_callback_with_timeout(&self, id: u64, callback: Py<PyAny>, timeout_ms: u64) {
-        let entry = CallbackEntry {
-            callback,
-            created_at: Instant::now(),
-            timeout_ms,
-        };
-        self.pending_callbacks.insert(id, entry);
-        tracing::debug!(
-            "Registered JS callback with ID: {} (timeout: {}ms)",
-            id,
-            timeout_ms
-        );
+    pub fn register_callback_with_timeout(&self, id: u64, callback: Py<PyAny>, timeout_ms: u64) -> bool {
+        let entry = CallbackEntry { callback, created_at: Instant::now(), timeout_ms };
+        let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+        if state.closed {
+            drop(state);
+            drop(entry);
+            return false;
+        }
+        let replaced = state.pending.insert(id, entry);
+        drop(state);
+        drop(replaced);
+        true
+    }
+
+    /// Detach one callback before any Python reference can be released.
+    #[cfg(feature = "python-bindings")]
+    fn take_callback(&self, id: u64) -> Option<CallbackEntry> {
+        let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = state.pending.remove(&id);
+        drop(state);
+        entry
+    }
+
+    /// Register and admit an async command, rolling back a rejected queue admission.
+    #[cfg(feature = "python-bindings")]
+    pub fn enqueue_callback(&self, queue: &super::MessageQueue, script: String,
+        id: u64, callback: Py<PyAny>, timeout_ms: u64) -> Result<(), String> {
+        if queue.is_shutdown() {
+            return Err("WebView queue is shut down".to_string());
+        }
+        if !self.register_callback_with_timeout(id, callback, timeout_ms) {
+            return Err("JavaScript callback admission is closed".to_string());
+        }
+        if let Err(error) = queue.try_push(super::WebViewMessage::EvalJsAsync {
+            script, callback_id: id,
+        }) {
+            self.cancel_callback(id);
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Complete a callback with the result
     #[cfg(feature = "python-bindings")]
     pub fn complete_callback(&self, id: u64, result: JsCallbackResult) -> Result<(), String> {
-        if let Some((_, entry)) = self.pending_callbacks.remove(&id) {
+        if let Some(entry) = self.take_callback(id) {
             Python::attach(|py| {
                 // Convert result to Python objects
                 let py_result = match &result.value {
@@ -146,61 +188,112 @@ impl JsCallbackManager {
         }
     }
 
-    /// Check for and cleanup timed-out callbacks
-    ///
-    /// Returns the number of callbacks that were timed out and cleaned up.
-    /// Each timed-out callback is called with (None, "Timeout error") before removal.
+    /// Start a fresh sweep over the current pending count (legacy explicit cleanup API).
     #[cfg(feature = "python-bindings")]
     pub fn cleanup_timed_out(&self) -> usize {
-        let now = Instant::now();
-        let mut timed_out_ids = Vec::new();
-
-        // Find timed-out callbacks
-        for entry in self.pending_callbacks.iter() {
-            let elapsed = now.duration_since(entry.value().created_at);
-            if elapsed.as_millis() as u64 > entry.value().timeout_ms {
-                timed_out_ids.push(*entry.key());
-            }
-        }
-
-        // Complete timed-out callbacks with error
-        for id in &timed_out_ids {
-            if let Some((_, entry)) = self.pending_callbacks.remove(id) {
-                tracing::warn!("JS callback {} timed out after {}ms", id, entry.timeout_ms);
-
-                // Call the callback with timeout error
-                Python::attach(|py| {
-                    let timeout_error = format!(
-                        "JavaScript execution timed out after {}ms",
-                        entry.timeout_ms
-                    );
-                    let py_error: Py<PyAny> = match timeout_error.into_pyobject(py) {
-                        Ok(obj) => obj.as_any().clone().unbind(),
-                        Err(_) => py.None(),
-                    };
-
-                    if let Err(e) = entry.callback.call1(py, (py.None(), py_error)) {
-                        tracing::error!("Failed to notify timeout for callback {}: {}", id, e);
-                    }
-                });
-            }
-        }
-
-        timed_out_ids.len()
+        let count = {
+            let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+            state.timeout_cursor = None;
+            state.timeout_high_water = None;
+            state.pending.len()
+        };
+        self.cleanup_timed_out_bounded(count)
     }
 
-    /// Cancel a pending callback
+    /// Inspect at most `limit` callbacks on the caller's thread.
+    /// Each sweep has a captured high-water ID, so arrivals cannot prevent a
+    /// return to old unexpired entries. The hosted owner calls this every pump.
+    /// No lock spans Python execution.
+    #[cfg(feature = "python-bindings")]
+    pub fn cleanup_timed_out_bounded(&self, limit: usize) -> usize {
+        self.cleanup_timed_out_while(limit, || true)
+    }
+
+    /// Stop notifying expired callbacks once the hosted owner observes close intent.
+    /// Detached expired entries are still released outside all locks.
+    #[cfg(feature = "python-bindings")]
+    pub fn cleanup_timed_out_while(&self, limit: usize, mut running: impl FnMut() -> bool) -> usize {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        if limit == 0 { return 0; }
+        let now = Instant::now();
+        let expired = {
+            let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+            let high_water = match state.timeout_high_water {
+                Some(id) => id,
+                None => {
+                    let Some((&id, _)) = state.pending.last_key_value() else { return 0; };
+                    state.timeout_cursor = None;
+                    state.timeout_high_water = Some(id);
+                    id
+                }
+            };
+            let ids: Vec<u64> = state.pending
+                .range((state.timeout_cursor.map_or(Unbounded, Excluded), Included(high_water)))
+                .take(limit).map(|(id, _)| *id).collect();
+            // An empty tail (including removal of the captured high-water entry)
+            // ends this sweep. New arrivals belong to the next one, even if this
+            // poll has unused inspection capacity.
+            let sweep_complete = ids.len() < limit || ids.last() == Some(&high_water);
+            let mut expired = Vec::new();
+            for id in ids {
+                state.timeout_cursor = Some(id);
+                if state.pending.get(&id).is_some_and(|entry|
+                    now.duration_since(entry.created_at).as_millis() >= u128::from(entry.timeout_ms)) {
+                    if let Some(entry) = state.pending.remove(&id) {
+                        expired.push((id, entry));
+                    }
+                }
+            }
+            if sweep_complete {
+                state.timeout_cursor = None;
+                state.timeout_high_water = None;
+            }
+            expired
+        };
+        let count = expired.len();
+        for (id, entry) in expired {
+            // A previous timeout callback may have requested close. Do not invoke
+            // more application callbacks after callback admission closes.
+            let closed = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).closed;
+            if closed || !running() { break; }
+            Python::attach(|py| {
+                let error = format!("JavaScript execution timed out after {}ms", entry.timeout_ms);
+                if let Err(error) = entry.callback.call1(py, (py.None(), error)) {
+                    tracing::error!("Failed to notify timeout for callback {}: {}", id, error);
+                }
+            });
+        }
+        count
+    }
+
+    /// Close admission without releasing references, so all lifecycle gates can close first.
+    #[cfg(feature = "python-bindings")]
+    pub fn close_admission(&self) {
+        self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).closed = true;
+    }
+
+    /// Permanently close admission and detach all callbacks before releasing Python.
+    #[cfg(feature = "python-bindings")]
+    pub fn cancel_all_hosted(&self) {
+        let detached = {
+            let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+            state.closed = true;
+            std::mem::take(&mut state.pending)
+        };
+        self.stored_results.clear(); // Contains only Rust-owned strings.
+        drop(detached); // Owner thread, with no map, admission, or registry lock held.
+    }
+
+    /// Cancel a pending callback outside the ownership lock.
     #[cfg(feature = "python-bindings")]
     pub fn cancel_callback(&self, id: u64) {
-        if self.pending_callbacks.remove(&id).is_some() {
-            tracing::debug!("Cancelled JS callback with ID: {}", id);
-        }
+        drop(self.take_callback(id));
     }
 
-    /// Get the number of pending callbacks
+    /// Get the number of pending callbacks.
     #[cfg(feature = "python-bindings")]
     pub fn pending_count(&self) -> usize {
-        self.pending_callbacks.len()
+        self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).pending.len()
     }
 
     /// Get the default timeout
@@ -216,7 +309,7 @@ impl JsCallbackManager {
     /// Check if a callback is still pending
     #[cfg(feature = "python-bindings")]
     pub fn has_callback(&self, id: u64) -> bool {
-        self.pending_callbacks.contains_key(&id)
+        self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).pending.contains_key(&id)
     }
 
     /// Store a result for Future-style polling

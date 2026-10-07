@@ -24,6 +24,7 @@ src/platform/windows/warmup.rs | 2 | Optional Windows WebView2 runtime warmup th
 src/platform/windows/webview2.rs | 7 | Win32 event handles, COM wait integration, and manual Send/Sync marker for signal state.
 src/webview/backend/native.rs | 2 | Win32 HWND validation, subclass callbacks, and child-window enumeration.
 src/webview/core/main.rs | 3 | Manual Send marker on a function-local raw-pointer carrier so the !Send native event loop can run inside Python::detach; the closure executes synchronously on the owning thread.
+src/webview/hosted_gtk.rs | 1 | Owner-thread destruction of a private GTK top-level after dispatch unwinds, Wry drops, and the delete signal disconnects; the widget is never queried afterward.
 src/webview/message_pump.rs | 4 | Win32 message pump calls and COM apartment setup.
 src/webview/proxy.rs | 2 | Manual Send/Sync marker for proxy state composed of Arc-backed synchronization.
 src/webview/tab_manager.rs | 3 | Win32 child-window enumeration callback and HWND FFI for tab discovery.

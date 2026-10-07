@@ -50,6 +50,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Register WebView class
     m.add_class::<webview::AuroraView>()?;
+    #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+    m.add_class::<webview::hosted_gtk::HostRuntime>()?;
 
     // Register EventEmitter class (thread-safe event emitter for cross-thread operations)
     m.add_class::<webview::EventEmitter>()?;

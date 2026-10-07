@@ -68,6 +68,8 @@ mod window_builder;
 // Re-exports
 pub use event_loop::run_desktop;
 pub use webview_builder::configure_webview_builder;
+#[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+pub(crate) use webview_builder::{configure_with_context, create_web_context};
 pub use window_builder::create_window_and_event_loop;
 
 /// Create desktop WebView with its own window

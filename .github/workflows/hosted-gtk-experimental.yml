@@ -1,0 +1,137 @@
+name: Experimental hosted GTK source checks
+
+on:
+  push:
+    branches: ['experiment/hosted-gtk-source-v4']
+  pull_request:
+    branches: ['fix/host-rpc-lifecycle-r4']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-gtk-source-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Linux compile and source contracts (not desktop acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: '2'
+      PYTHONDONTWRITEBYTECODE: '1'
+      # Dependency sync is explicit; uv run must not rebuild/replace the wheel.
+      UV_NO_SYNC: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare existing official repository toolchain and dependencies
+        uses: ./.github/actions/setup-auroraview
+        with:
+          python-version: '3.11.15'
+          rust-components: 'rustfmt clippy'
+          cache-key-suffix: 'hosted-gtk-experimental'
+          # ci-install would build the project during uv sync, before assets.
+          install-dependencies: 'false'
+
+      - name: Record exact source and toolchain
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          git rev-parse HEAD | tee hosted-gtk-evidence/source.txt
+          vx just hosted-gtk-toolchain-info | tee hosted-gtk-evidence/toolchain.txt
+
+      - name: Install test dependencies without an implicit project build
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just prepare-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/dependencies.txt
+
+      - name: Run real Python lifecycle code with explicit fake native boundary
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-python-source 2>&1 | tee hosted-gtk-evidence/python-source.txt
+
+      - name: Compile hosted Rust test targets without execution deadline
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just compile-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/hosted-compile.txt
+
+      - name: Run bounded hosted queue and ownership contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/hosted-tests.txt
+
+      - name: Build the opt-in hosted GTK wheel
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf dist/hosted-gtk
+          vx just build-hosted-gtk 2>&1 | tee hosted-gtk-evidence/wheel-build.txt
+          sha256sum dist/hosted-gtk/*.whl | tee hosted-gtk-evidence/wheels.sha256
+
+      - name: Compile and run affected contracts with hosted GTK disabled
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-feature-off 2>&1 | tee hosted-gtk-evidence/feature-off.txt
+
+      - name: Install the exact experimental wheel for Python regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just install-hosted-gtk-test-wheel 2>&1 | tee hosted-gtk-evidence/wheel-install.txt
+
+      - name: Regress the existing Python host lifecycle contract
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just test-hosted-gtk-python-regression 2>&1 | tee hosted-gtk-evidence/python-regression.txt
+
+      - name: Audit format, unsafe boundaries and hosted clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          vx just lint-hosted-gtk-source 2>&1 | tee hosted-gtk-evidence/lint.txt
+
+      - name: Record resolver output and honest validation boundary
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p hosted-gtk-evidence
+          git diff -- Cargo.lock > hosted-gtk-evidence/Cargo.lock.patch
+          cat hosted-gtk-evidence/Cargo.lock.patch
+          cp Cargo.lock hosted-gtk-evidence/Cargo.lock
+          sha256sum Cargo.lock > hosted-gtk-evidence/Cargo.lock.sha256
+          git diff -- uv.lock > hosted-gtk-evidence/uv.lock.patch
+          cat hosted-gtk-evidence/uv.lock.patch
+          cp uv.lock hosted-gtk-evidence/uv.lock
+          sha256sum uv.lock > hosted-gtk-evidence/uv.lock.sha256
+          printf '%s\n' \
+            'Native Blender/WebKit rendering: not run in this job.' \
+            'Native desktop acceptance and rendering evidence remain required.' \
+            'An uploaded experimental wheel is not a release or support claim.' \
+            > hosted-gtk-evidence/BOUNDARY.txt
+
+      - name: Reject uncommitted resolver changes
+        if: always()
+        run: git diff --exit-code -- Cargo.lock uv.lock
+
+      - name: Upload source diagnostics and experimental wheel
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-gtk-source-${{ github.sha }}
+          path: |
+            hosted-gtk-evidence/
+            dist/hosted-gtk/*.whl
+          if-no-files-found: error
+          retention-days: 7

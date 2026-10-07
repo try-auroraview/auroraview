@@ -113,6 +113,10 @@ impl AuroraView {
     /// Returns `false` if the WebView is not yet initialized (safe to retry).
     /// Returns `true` if the window should be closed.
     fn process_events(&self) -> PyResult<bool> {
+        #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
+        if self.message_queue.hosted_state() != 0 {
+            return Ok(self.message_queue.hosted_state() == 3);
+        }
         // Use try_borrow to avoid panic during initialization
         match self.inner.try_borrow() {
             Ok(inner_ref) => {

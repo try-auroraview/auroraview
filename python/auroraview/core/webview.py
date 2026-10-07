@@ -847,6 +847,11 @@ class WebView(
             >>> while webview.is_alive():
             ...     time.sleep(0.1)
         """
+        if getattr(self, "_host_runtime", None) is not None:
+            core = self._require_owner_core("is_alive") if not self._close_requested else self._core
+            if not self._is_core_owner(core):
+                raise RuntimeError("Hosted is_alive must run on the owner thread")
+            return core is not None and core.is_alive()
         if self._show_thread is None:
             return False
         return self._show_thread.is_alive()
