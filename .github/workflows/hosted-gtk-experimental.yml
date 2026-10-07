@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: ['fix/host-rpc-lifecycle-r4']
   workflow_dispatch:
+    inputs:
+      blender_e2e:
+        description: 'Run the single foreground Blender / experimental GTK E2E'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -213,3 +218,58 @@ jobs:
           path: dist/hosted-gtk/*.whl
           if-no-files-found: error
           retention-days: 7
+
+  blender-e2e:
+    name: Foreground Blender WebView E2E (experimental route)
+    needs: source
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.blender_e2e) ||
+      (github.event_name == 'pull_request' && github.head_ref == 'experiment/hosted-gtk-source-v4')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      GDK_BACKEND: x11
+      UV_NO_SYNC: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: try-auroraview/auroraview-blender
+          ref: 392b1c3b5446202fc5301d0180137b2c4b37b7c5
+          path: .ci/blender-adapter
+          persist-credentials: false
+      - name: Set up the existing repository tool runner
+        uses: loonghao/vx@3bcef20521ac4836e5e56da55c09af90f320c564 # vx-v0.9.33
+      - name: Download this run's exact experimental wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: hosted-gtk-wheel-${{ github.sha }}
+          path: dist/hosted-gtk
+      - name: Download this run's wheel/source receipt
+        uses: actions/download-artifact@v8
+        with:
+          name: hosted-gtk-diagnostics-${{ github.sha }}
+          path: .ci/core-receipt
+      - name: Install official GUI runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth dbus-x11 openbox wmctrl scrot x11-utils \
+            libwebkit2gtk-4.1-0 libxdo3 libayatana-appindicator3-1 \
+            libgl1 libegl1 libxi6 libxfixes3 libxrender1 libsm6 libxxf86vm1
+      - name: Prepare official Blender and isolated packages
+        run: vx just prepare-blender-hosted-e2e
+      - name: Run one bounded foreground Blender and native WebView session
+        run: vx just test-blender-hosted-e2e
+      - name: Save actual screenshots and host evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: blender-hosted-e2e-${{ github.sha }}
+          path: blender-hosted-evidence/
+          if-no-files-found: error
+          retention-days: 7
+

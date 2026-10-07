@@ -2265,3 +2265,22 @@ pin-hosted-gtk-python-environment:
 [linux]
 verify-hosted-gtk-python-environment:
     vx python scripts/ci/pin_hosted_gtk_python.py --verify-environment
+
+# One disposable foreground Blender process; no default Linux adapter enablement.
+[linux]
+prepare-blender-hosted-e2e:
+    mkdir -p .ci/blender .ci/blender-test-site blender-hosted-evidence
+    sha256sum -c .ci/core-receipt/wheels.sha256
+    git rev-parse HEAD > blender-hosted-evidence/source.txt
+    cmp .ci/core-receipt/source.txt blender-hosted-evidence/source.txt
+    git -C .ci/blender-adapter rev-parse HEAD > blender-hosted-evidence/adapter-source.txt
+    curl --fail --location --retry 2 --max-time 180 https://download.blender.org/release/Blender3.6/blender-3.6.21-linux-x64.tar.xz -o .ci/blender.tar.xz
+    sha256sum .ci/blender.tar.xz > blender-hosted-evidence/blender-download.sha256
+    tar -xf .ci/blender.tar.xz -C .ci/blender --strip-components=1
+    vx uv pip install --python-version 3.10 --target .ci/blender-test-site --no-deps dist/hosted-gtk/*.whl .ci/blender-adapter
+    vx python -m py_compile scripts/ci/blender_hosted_e2e.py
+
+[linux]
+test-blender-hosted-e2e:
+    timeout --signal=TERM --kill-after=10s 150s dbus-run-session -- xvfb-run --auto-servernum --server-args="-screen 0 1600x900x24" bash scripts/ci/run_blender_hosted_e2e.sh "$PWD/.ci/blender/blender" "$PWD/.ci/blender-test-site" "$(find "$PWD/dist/hosted-gtk" -maxdepth 1 -name '*.whl' -print -quit)" "$PWD/blender-hosted-evidence"
+
