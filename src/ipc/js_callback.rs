@@ -14,10 +14,10 @@ use dashmap::DashMap;
 use pyo3::prelude::*;
 #[cfg(feature = "python-bindings")]
 use pyo3::{Py, PyAny};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 #[cfg(feature = "python-bindings")]
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 #[cfg(feature = "python-bindings")]
 use std::sync::Mutex;
 #[cfg(feature = "python-bindings")]
@@ -101,9 +101,21 @@ impl JsCallbackManager {
 
     /// Register without dropping a rejected or replaced Python object under a lock.
     #[cfg(feature = "python-bindings")]
-    pub fn register_callback_with_timeout(&self, id: u64, callback: Py<PyAny>, timeout_ms: u64) -> bool {
-        let entry = CallbackEntry { callback, created_at: Instant::now(), timeout_ms };
-        let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+    pub fn register_callback_with_timeout(
+        &self,
+        id: u64,
+        callback: Py<PyAny>,
+        timeout_ms: u64,
+    ) -> bool {
+        let entry = CallbackEntry {
+            callback,
+            created_at: Instant::now(),
+            timeout_ms,
+        };
+        let mut state = self
+            .pending_callbacks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if state.closed {
             drop(state);
             drop(entry);
@@ -118,7 +130,10 @@ impl JsCallbackManager {
     /// Detach one callback before any Python reference can be released.
     #[cfg(feature = "python-bindings")]
     fn take_callback(&self, id: u64) -> Option<CallbackEntry> {
-        let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .pending_callbacks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let entry = state.pending.remove(&id);
         drop(state);
         entry
@@ -126,8 +141,14 @@ impl JsCallbackManager {
 
     /// Register and admit an async command, rolling back a rejected queue admission.
     #[cfg(feature = "python-bindings")]
-    pub fn enqueue_callback(&self, queue: &super::MessageQueue, script: String,
-        id: u64, callback: Py<PyAny>, timeout_ms: u64) -> Result<(), String> {
+    pub fn enqueue_callback(
+        &self,
+        queue: &super::MessageQueue,
+        script: String,
+        id: u64,
+        callback: Py<PyAny>,
+        timeout_ms: u64,
+    ) -> Result<(), String> {
         if queue.is_shutdown() {
             return Err("WebView queue is shut down".to_string());
         }
@@ -135,7 +156,8 @@ impl JsCallbackManager {
             return Err("JavaScript callback admission is closed".to_string());
         }
         if let Err(error) = queue.try_push(super::WebViewMessage::EvalJsAsync {
-            script, callback_id: id,
+            script,
+            callback_id: id,
         }) {
             self.cancel_callback(id);
             return Err(error);
@@ -192,7 +214,10 @@ impl JsCallbackManager {
     #[cfg(feature = "python-bindings")]
     pub fn cleanup_timed_out(&self) -> usize {
         let count = {
-            let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .pending_callbacks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             state.timeout_cursor = None;
             state.timeout_high_water = None;
             state.pending.len()
@@ -212,24 +237,41 @@ impl JsCallbackManager {
     /// Stop notifying expired callbacks once the hosted owner observes close intent.
     /// Detached expired entries are still released outside all locks.
     #[cfg(feature = "python-bindings")]
-    pub fn cleanup_timed_out_while(&self, limit: usize, mut running: impl FnMut() -> bool) -> usize {
+    pub fn cleanup_timed_out_while(
+        &self,
+        limit: usize,
+        mut running: impl FnMut() -> bool,
+    ) -> usize {
         use std::ops::Bound::{Excluded, Included, Unbounded};
-        if limit == 0 { return 0; }
+        if limit == 0 {
+            return 0;
+        }
         let now = Instant::now();
         let expired = {
-            let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .pending_callbacks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let high_water = match state.timeout_high_water {
                 Some(id) => id,
                 None => {
-                    let Some((&id, _)) = state.pending.last_key_value() else { return 0; };
+                    let Some((&id, _)) = state.pending.last_key_value() else {
+                        return 0;
+                    };
                     state.timeout_cursor = None;
                     state.timeout_high_water = Some(id);
                     id
                 }
             };
-            let ids: Vec<u64> = state.pending
-                .range((state.timeout_cursor.map_or(Unbounded, Excluded), Included(high_water)))
-                .take(limit).map(|(id, _)| *id).collect();
+            let ids: Vec<u64> = state
+                .pending
+                .range((
+                    state.timeout_cursor.map_or(Unbounded, Excluded),
+                    Included(high_water),
+                ))
+                .take(limit)
+                .map(|(id, _)| *id)
+                .collect();
             // An empty tail (including removal of the captured high-water entry)
             // ends this sweep. New arrivals belong to the next one, even if this
             // poll has unused inspection capacity.
@@ -237,8 +279,9 @@ impl JsCallbackManager {
             let mut expired = Vec::new();
             for id in ids {
                 state.timeout_cursor = Some(id);
-                if state.pending.get(&id).is_some_and(|entry|
-                    now.duration_since(entry.created_at).as_millis() >= u128::from(entry.timeout_ms)) {
+                if state.pending.get(&id).is_some_and(|entry| {
+                    now.duration_since(entry.created_at).as_millis() >= u128::from(entry.timeout_ms)
+                }) {
                     if let Some(entry) = state.pending.remove(&id) {
                         expired.push((id, entry));
                     }
@@ -254,10 +297,19 @@ impl JsCallbackManager {
         for (id, entry) in expired {
             // A previous timeout callback may have requested close. Do not invoke
             // more application callbacks after callback admission closes.
-            let closed = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).closed;
-            if closed || !running() { break; }
+            let closed = self
+                .pending_callbacks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .closed;
+            if closed || !running() {
+                break;
+            }
             Python::attach(|py| {
-                let error = format!("JavaScript execution timed out after {}ms", entry.timeout_ms);
+                let error = format!(
+                    "JavaScript execution timed out after {}ms",
+                    entry.timeout_ms
+                );
                 if let Err(error) = entry.callback.call1(py, (py.None(), error)) {
                     tracing::error!("Failed to notify timeout for callback {}: {}", id, error);
                 }
@@ -269,14 +321,20 @@ impl JsCallbackManager {
     /// Close admission without releasing references, so all lifecycle gates can close first.
     #[cfg(feature = "python-bindings")]
     pub fn close_admission(&self) {
-        self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).closed = true;
+        self.pending_callbacks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .closed = true;
     }
 
     /// Permanently close admission and detach all callbacks before releasing Python.
     #[cfg(feature = "python-bindings")]
     pub fn cancel_all_hosted(&self) {
         let detached = {
-            let mut state = self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self
+                .pending_callbacks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             state.closed = true;
             std::mem::take(&mut state.pending)
         };
@@ -293,7 +351,11 @@ impl JsCallbackManager {
     /// Get the number of pending callbacks.
     #[cfg(feature = "python-bindings")]
     pub fn pending_count(&self) -> usize {
-        self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).pending.len()
+        self.pending_callbacks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending
+            .len()
     }
 
     /// Get the default timeout
@@ -309,7 +371,11 @@ impl JsCallbackManager {
     /// Check if a callback is still pending
     #[cfg(feature = "python-bindings")]
     pub fn has_callback(&self, id: u64) -> bool {
-        self.pending_callbacks.lock().unwrap_or_else(|error| error.into_inner()).pending.contains_key(&id)
+        self.pending_callbacks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending
+            .contains_key(&id)
     }
 
     /// Store a result for Future-style polling

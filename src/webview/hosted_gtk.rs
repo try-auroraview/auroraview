@@ -18,8 +18,8 @@ use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
 use super::core::AuroraView;
 use super::desktop::{configure_with_context, create_web_context};
-use super::message_processor::process_message;
 use super::hosted_pump::{run_slice, PumpTarget};
+use super::message_processor::process_message;
 use crate::ipc::{IpcHandler, JsCallbackManager, MessageQueue, WebViewMessage};
 
 const MAX_VIEWS: usize = 16;
@@ -37,7 +37,9 @@ struct DispatchGuard;
 impl DispatchGuard {
     fn enter() -> PyResult<Self> {
         if BUSY.with(|busy| busy.replace(true)) {
-            return Err(PyRuntimeError::new_err("Hosted GTK dispatch cannot be reentered"));
+            return Err(PyRuntimeError::new_err(
+                "Hosted GTK dispatch cannot be reentered",
+            ));
         }
         Ok(Self)
     }
@@ -57,7 +59,9 @@ struct RegistryLease {
 
 impl RegistryLease {
     fn take() -> Self {
-        Self { views: VIEWS.with(|stored| std::mem::take(&mut *stored.borrow_mut())) }
+        Self {
+            views: VIEWS.with(|stored| std::mem::take(&mut *stored.borrow_mut())),
+        }
     }
 }
 
@@ -141,7 +145,9 @@ impl PumpTarget for NativePump<'_> {
     }
 
     fn native_step(&mut self) -> bool {
-        if !gtk::events_pending() { return false; }
+        if !gtk::events_pending() {
+            return false;
+        }
         gtk::main_iteration_do(false);
         self.closed += close_requested(self.views);
         true
@@ -152,8 +158,12 @@ impl PumpTarget for NativePump<'_> {
         for _ in 0..self.views.len() {
             // The lease retains ownership across application/native calls and
             // restores it if Rust unwinds before this step returns.
-            let Some(view) = self.views.front() else { break; };
-            if SHUTDOWN.with(Cell::get) || view.queue.hosted_state() != 1 { break; }
+            let Some(view) = self.views.front() else {
+                break;
+            };
+            if SHUTDOWN.with(Cell::get) || view.queue.hosted_state() != 1 {
+                break;
+            }
             let message = view.queue.pop();
             if let (Some(message), Some(webview)) = (message, view.webview.as_ref()) {
                 // Final owner-side firewall for commands admitted before
@@ -213,17 +223,25 @@ impl HostRuntime {
         let current = threading.call_method0("current_thread")?;
         let main = threading.call_method0("main_thread")?;
         if !current.is(&main) {
-            return Err(PyRuntimeError::new_err("Hosted GTK must be created on the host main thread"));
+            return Err(PyRuntimeError::new_err(
+                "Hosted GTK must be created on the host main thread",
+            ));
         }
         if gtk::is_initialized() && !gtk::is_initialized_main_thread() {
-            return Err(PyRuntimeError::new_err("GTK is already owned by another thread"));
+            return Err(PyRuntimeError::new_err(
+                "GTK is already owned by another thread",
+            ));
         }
         if CLAIMED.with(Cell::get) {
-            return Err(PyRuntimeError::new_err("A HostRuntime already owns this process"));
+            return Err(PyRuntimeError::new_err(
+                "A HostRuntime already owns this process",
+            ));
         }
         gtk::init().map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
         CLAIMED.with(|claimed| claimed.set(true));
-        Ok(Self { closed: Cell::new(false) })
+        Ok(Self {
+            closed: Cell::new(false),
+        })
     }
 
     /// Construct without entering an outer loop. The host must call poll().
@@ -236,11 +254,18 @@ impl HostRuntime {
             return Err(PyRuntimeError::new_err("Hosted view limit reached (16)"));
         }
         if view.inner.borrow().is_some() || view.message_queue.hosted_state() != 0 {
-            return Err(PyRuntimeError::new_err("Use a fresh WebView for hosted creation"));
+            return Err(PyRuntimeError::new_err(
+                "Use a fresh WebView for hosted creation",
+            ));
         }
         let config = view.config.borrow().clone();
-        if config.parent_hwnd.is_some() || config.headless || config.download_prompt
-            || matches!(config.new_window_mode, super::config::NewWindowMode::ChildWebView)
+        if config.parent_hwnd.is_some()
+            || config.headless
+            || config.download_prompt
+            || matches!(
+                config.new_window_mode,
+                super::config::NewWindowMode::ChildWebView
+            )
         {
             return Err(PyValueError::new_err(
                 "Hosted GTK supports floating GUI views without modal downloads or child popups",
@@ -253,14 +278,23 @@ impl HostRuntime {
                 "Hosted GTK single-document mode requires initial inline HTML, not a URL",
             ));
         }
-        let width = i32::try_from(config.width).ok().filter(|value| *value > 0)
+        let width = i32::try_from(config.width)
+            .ok()
+            .filter(|value| *value > 0)
             .ok_or_else(|| PyValueError::new_err("Invalid hosted width"))?;
-        let height = i32::try_from(config.height).ok().filter(|value| *value > 0)
+        let height = i32::try_from(config.height)
+            .ok()
+            .filter(|value| *value > 0)
             .ok_or_else(|| PyValueError::new_err("Invalid hosted height"))?;
-        view.message_queue.begin_hosted().map_err(PyRuntimeError::new_err)?;
+        view.message_queue
+            .begin_hosted()
+            .map_err(PyRuntimeError::new_err)?;
         let result = (|| -> Result<HostedView, Box<dyn std::error::Error>> {
             let window = gtk::Window::new(gtk::WindowType::Toplevel);
-            let mut owner = WindowOwner { window, delete_handler: None };
+            let mut owner = WindowOwner {
+                window,
+                delete_handler: None,
+            };
             owner.window.set_title(&config.title);
             owner.window.set_default_size(width, height);
             owner.window.set_resizable(config.resizable);
@@ -275,8 +309,10 @@ impl HostRuntime {
             owner.window.add(&container);
             let mut context = create_web_context(&config)?;
             let builder = configure_with_context(
-                &config, Arc::clone(&view.ipc_handler),
-                Arc::clone(&view.message_queue), &mut context,
+                &config,
+                Arc::clone(&view.ipc_handler),
+                Arc::clone(&view.message_queue),
+                &mut context,
             )?;
             let webview = builder.build_gtk(&container)?;
             // Wry's window.close() handler destroys the WebKit child directly,
@@ -291,7 +327,9 @@ impl HostRuntime {
                 owner.window.show_all();
             }
             Ok(HostedView {
-                webview: Some(webview), window: owner, _context: context,
+                webview: Some(webview),
+                window: owner,
+                _context: context,
                 queue: Arc::clone(&view.message_queue),
                 ipc: Arc::clone(&view.ipc_handler),
                 callbacks: Arc::clone(&view.js_callback_manager),
@@ -316,7 +354,9 @@ impl HostRuntime {
             let mut lease = RegistryLease::take();
             close_requested(&mut lease.views);
             finish_shutdown();
-            return Err(PyRuntimeError::new_err("HostRuntime shut down during creation"));
+            return Err(PyRuntimeError::new_err(
+                "HostRuntime shut down during creation",
+            ));
         }
         result
     }
@@ -324,10 +364,19 @@ impl HostRuntime {
     /// Advance native events and outbound queues with shared count/time limits.
     /// A single GTK callback can exceed the soft elapsed-time budget.
     #[pyo3(signature = (max_iterations=64, max_messages=64, budget_ms=2.0))]
-    fn poll<'py>(&self, py: Python<'py>, max_iterations: usize, max_messages: usize,
-        budget_ms: f64) -> PyResult<Bound<'py, PyDict>> {
-        if max_iterations == 0 || max_iterations > 64 || max_messages == 0
-            || max_messages > 256 || !budget_ms.is_finite() || budget_ms <= 0.0
+    fn poll<'py>(
+        &self,
+        py: Python<'py>,
+        max_iterations: usize,
+        max_messages: usize,
+        budget_ms: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if max_iterations == 0
+            || max_iterations > 64
+            || max_messages == 0
+            || max_messages > 256
+            || !budget_ms.is_finite()
+            || budget_ms <= 0.0
             || budget_ms > 16.0
         {
             return Err(PyValueError::new_err("Invalid hosted pump budget"));
@@ -347,7 +396,9 @@ impl HostRuntime {
         // thread. This opportunity is guaranteed even if GTK consumes the soft
         // budget every time. A callback itself cannot be preempted.
         for view in views.iter() {
-            if SHUTDOWN.with(Cell::get) { break; }
+            if SHUTDOWN.with(Cell::get) {
+                break;
+            }
             if view.queue.hosted_state() == 1 {
                 timed_out_callbacks += view.callbacks.cleanup_timed_out_while(8, || {
                     !SHUTDOWN.with(Cell::get) && view.queue.hosted_state() == 1
@@ -356,16 +407,27 @@ impl HostRuntime {
         }
         closed += close_requested(views);
         let work = {
-            let mut target = NativePump { views: &mut *views, closed: 0 };
-            let work = run_slice(&mut target, || started.elapsed(), budget, max_iterations, max_messages);
+            let mut target = NativePump {
+                views: &mut *views,
+                closed: 0,
+            };
+            let work = run_slice(
+                &mut target,
+                || started.elapsed(),
+                budget,
+                max_iterations,
+                max_messages,
+            );
             closed += target.closed;
             work
         };
         closed += close_requested(views);
         let live = views.len();
         let pending_messages: usize = views.iter().map(|view| view.queue.len()).sum();
-        let dropped_messages: u64 = views.iter()
-            .map(|view| view.queue.get_metrics_snapshot().messages_dropped).sum();
+        let dropped_messages: u64 = views
+            .iter()
+            .map(|view| view.queue.get_metrics_snapshot().messages_dropped)
+            .sum();
         let pending_native = gtk::events_pending();
         if SHUTDOWN.with(Cell::get) {
             self.closed.set(true);

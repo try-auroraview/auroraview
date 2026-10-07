@@ -33,11 +33,13 @@ pub fn run_slice(
         report.native_iterations += usize::from(native);
         // Always offer outbound service after an overrun, unless native work
         // closed the runtime. The target must retire individual closed views.
-        let outbound = target.is_running()
-            && report.messages < max_messages && target.outbound_step();
+        let outbound =
+            target.is_running() && report.messages < max_messages && target.outbound_step();
         report.messages += usize::from(outbound);
         first_round = false;
-        if !native && !outbound { break; }
+        if !native && !outbound {
+            break;
+        }
     }
     report
 }

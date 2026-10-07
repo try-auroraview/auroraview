@@ -114,7 +114,10 @@ impl IpcHandler {
     where
         F: Fn(IpcMessage) -> Result<serde_json::Value, String> + Send + Sync + 'static,
     {
-        let closed = self.admission_closed.lock().unwrap_or_else(|error| error.into_inner());
+        let closed = self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if *closed {
             drop(closed);
             drop(callback);
@@ -129,7 +132,10 @@ impl IpcHandler {
     /// Register a Python callback for an event
     #[cfg(feature = "python-bindings")]
     pub fn register_python_callback(&self, event: &str, callback: Py<PyAny>) {
-        let closed = self.admission_closed.lock().unwrap_or_else(|error| error.into_inner());
+        let closed = self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if *closed {
             drop(closed);
             drop(callback);
@@ -188,7 +194,11 @@ impl IpcHandler {
     #[allow(dead_code)]
     pub fn handle_message(&self, message: IpcMessage) -> Result<serde_json::Value, String> {
         tracing::debug!("Handling IPC message: {}", message.event);
-        if *self.admission_closed.lock().unwrap_or_else(|error| error.into_inner()) {
+        if *self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
             return Err("IPC handler is shut down".to_string());
         }
 
@@ -206,13 +216,20 @@ impl IpcHandler {
 
         // Snapshot Arc ownership, then release the shard before any application code.
         #[cfg(feature = "python-bindings")]
-        let callbacks = self.python_callbacks.get(&message.event)
+        let callbacks = self
+            .python_callbacks
+            .get(&message.event)
             .map(|callbacks| callbacks.value().clone());
         #[cfg(feature = "python-bindings")]
         if let Some(callbacks) = callbacks {
             for callback in callbacks {
-                let closed = *self.admission_closed.lock().unwrap_or_else(|error| error.into_inner());
-                if closed { return Err("IPC handler is shut down".to_string()); }
+                let closed = *self
+                    .admission_closed
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if closed {
+                    return Err("IPC handler is shut down".to_string());
+                }
                 callback.call(message.data.clone())?;
             }
             return Ok(serde_json::json!({"status": "ok"}));
@@ -224,7 +241,9 @@ impl IpcHandler {
         }
 
         // Rust callbacks may also reenter registration or shutdown.
-        let callback = self.callbacks.get(&message.event)
+        let callback = self
+            .callbacks
+            .get(&message.event)
             .and_then(|callbacks| callbacks.value().first().cloned());
         if let Some(callback) = callback {
             return callback(message.clone());
@@ -300,7 +319,10 @@ impl IpcHandler {
 
     /// Close registration without dropping callbacks; callable finalizers can reenter safely.
     pub fn close_admission(&self) {
-        *self.admission_closed.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        *self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
     }
 
     /// Close registration permanently before releasing hosted callback ownership.
@@ -309,14 +331,30 @@ impl IpcHandler {
     }
 
     fn detach_callbacks(&self, shutdown: bool) {
-        let mut closed = self.admission_closed.lock().unwrap_or_else(|error| error.into_inner());
+        let mut closed = self
+            .admission_closed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         *closed |= shutdown;
-        let keys: Vec<String> = self.callbacks.iter().map(|entry| entry.key().clone()).collect();
-        let detached: Vec<_> = keys.iter().filter_map(|key| self.callbacks.remove(key)).collect();
+        let keys: Vec<String> = self
+            .callbacks
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        let detached: Vec<_> = keys
+            .iter()
+            .filter_map(|key| self.callbacks.remove(key))
+            .collect();
         #[cfg(feature = "python-bindings")]
         let detached_python = {
-            let keys: Vec<String> = self.python_callbacks.iter().map(|entry| entry.key().clone()).collect();
-            keys.iter().filter_map(|key| self.python_callbacks.remove(key)).collect::<Vec<_>>()
+            let keys: Vec<String> = self
+                .python_callbacks
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect();
+            keys.iter()
+                .filter_map(|key| self.python_callbacks.remove(key))
+                .collect::<Vec<_>>()
         };
         drop(closed);
         drop(detached);

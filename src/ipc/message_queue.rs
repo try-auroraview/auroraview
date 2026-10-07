@@ -21,9 +21,9 @@
 
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use ipckit::graceful::ShutdownState;
-use std::sync::{Arc, Mutex};
 #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 // Import UserEvent from webview event_loop module
@@ -153,7 +153,10 @@ impl MessageQueue {
     ///
     /// Uses ipckit's `ShutdownState` for graceful shutdown coordination.
     pub fn shutdown(&self) {
-        let admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.shutdown_state.shutdown();
         drop(admission);
         tracing::info!(
@@ -192,18 +195,25 @@ impl MessageQueue {
     /// Nonblocking, observable admission for operations with callback ownership.
     /// No command is admitted after shutdown or hosted close intent.
     pub fn try_push(&self, message: WebViewMessage) -> Result<(), String> {
-        let admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
         if self.hosted_state() != 0 {
             if matches!(&message, WebViewMessage::Close) {
-                let _ = self.hosted_state.compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
+                let _ =
+                    self.hosted_state
+                        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
                 return Ok(());
             }
             if self.hosted_state() != 1 {
                 return Err("Hosted WebView is closing".to_string());
             }
             if Self::is_navigation(&message) {
-                return Err("Hosted GTK is single-document; create a fresh view to navigate".to_string());
+                return Err(
+                    "Hosted GTK is single-document; create a fresh view to navigate".to_string(),
+                );
             }
         }
         if self.is_shutdown() {
@@ -219,7 +229,9 @@ impl MessageQueue {
             self.metrics.update_peak_queue_length(self.len());
         }
         drop(admission);
-        if result.is_ok() { self.wake_event_loop(); }
+        if result.is_ok() {
+            self.wake_event_loop();
+        }
         result
     }
 
@@ -347,7 +359,9 @@ impl MessageQueue {
         if self.hosted_state() != 0 {
             return self.try_push(message);
         }
-        if self.is_shutdown() { return Err("WebView queue is shut down".to_string()); }
+        if self.is_shutdown() {
+            return Err("WebView queue is shut down".to_string());
+        }
         let max_retries = self.config.max_retries;
         let retry_delay = std::time::Duration::from_millis(self.config.retry_delay_ms);
         let start_time = std::time::Instant::now();
@@ -485,11 +499,15 @@ impl MessageQueue {
     /// Mark a queue as belonging to the experimental owner-thread GTK runtime.
     #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
     pub fn begin_hosted(&self) -> Result<(), String> {
-        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if self.config.block_on_full || self.is_shutdown() {
             return Err("Hosted queues must be open and nonblocking".to_string());
         }
-        self.hosted_state.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        self.hosted_state
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| ())
             .map_err(|_| "Hosted views are single-use; construct a fresh view".to_string())
     }
@@ -497,7 +515,10 @@ impl MessageQueue {
     /// Navigation commands are forbidden even when queued before hosted creation.
     #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
     pub fn is_navigation(message: &WebViewMessage) -> bool {
-        matches!(message, WebViewMessage::LoadUrl(_) | WebViewMessage::LoadHtml(_) | WebViewMessage::Reload)
+        matches!(
+            message,
+            WebViewMessage::LoadUrl(_) | WebViewMessage::LoadHtml(_) | WebViewMessage::Reload
+        )
     }
 
     /// Permit at most the configured initial navigation, before the first commit.
@@ -505,12 +526,23 @@ impl MessageQueue {
     /// callback holds only plain state; native destruction happens after return.
     #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
     pub fn hosted_navigation_request(&self, is_initial_url: bool) -> bool {
-        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
-        if self.hosted_state() == 1 && !self.is_shutdown() && is_initial_url
-            && self.hosted_document.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.hosted_state() == 1
+            && !self.is_shutdown()
+            && is_initial_url
+            && self
+                .hosted_document
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
             return true;
         }
-        let _ = self.hosted_state.compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
+        let _ = self
+            .hosted_state
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
         false
     }
 
@@ -519,13 +551,21 @@ impl MessageQueue {
     /// commit closes the view and never admits that document's IPC.
     #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
     pub fn hosted_document_started(&self, is_initial_url: bool) -> bool {
-        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
-        if self.hosted_state() == 1 && !self.is_shutdown() && is_initial_url
-            && self.hosted_document.load(Ordering::Acquire) < 2 {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.hosted_state() == 1
+            && !self.is_shutdown()
+            && is_initial_url
+            && self.hosted_document.load(Ordering::Acquire) < 2
+        {
             self.hosted_document.store(2, Ordering::Release);
             return true;
         }
-        let _ = self.hosted_state.compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
+        let _ = self
+            .hosted_state
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire);
         false
     }
 
@@ -533,7 +573,8 @@ impl MessageQueue {
     /// or after navigation/close intent, including a late WebKit IPC delivery.
     #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
     pub fn hosted_ipc_allowed(&self) -> bool {
-        self.hosted_state() == 1 && !self.is_shutdown()
+        self.hosted_state() == 1
+            && !self.is_shutdown()
             && self.hosted_document.load(Ordering::Acquire) == 2
     }
 

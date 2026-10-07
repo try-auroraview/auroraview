@@ -552,7 +552,9 @@ impl AuroraView {
 
         #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
         if self.message_queue.hosted_state() != 0 {
-            return self.message_queue.try_push(WebViewMessage::LoadUrl(normalized))
+            return self
+                .message_queue
+                .try_push(WebViewMessage::LoadUrl(normalized))
                 .map_err(pyo3::exceptions::PyRuntimeError::new_err);
         }
 
@@ -581,7 +583,9 @@ impl AuroraView {
 
         #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
         if self.message_queue.hosted_state() != 0 {
-            return self.message_queue.try_push(WebViewMessage::LoadHtml(html.to_string()))
+            return self
+                .message_queue
+                .try_push(WebViewMessage::LoadHtml(html.to_string()))
                 .map_err(pyo3::exceptions::PyRuntimeError::new_err);
         }
 
@@ -614,7 +618,9 @@ impl AuroraView {
     fn reload(&self) -> PyResult<()> {
         #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
         if self.message_queue.hosted_state() != 0 {
-            return self.message_queue.try_push(WebViewMessage::Reload)
+            return self
+                .message_queue
+                .try_push(WebViewMessage::Reload)
                 .map_err(pyo3::exceptions::PyRuntimeError::new_err);
         }
         self.message_queue.push(WebViewMessage::Reload);

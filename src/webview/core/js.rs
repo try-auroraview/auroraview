@@ -30,9 +30,15 @@ impl AuroraView {
             script
         );
 
-        self.js_callback_manager.enqueue_callback(
-            &self.message_queue, script.to_string(), callback_id, callback, timeout_ms,
-        ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        self.js_callback_manager
+            .enqueue_callback(
+                &self.message_queue,
+                script.to_string(),
+                callback_id,
+                callback,
+                timeout_ms,
+            )
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
         Ok(())
     }
@@ -76,9 +82,15 @@ impl AuroraView {
             script
         );
 
-        self.js_callback_manager.enqueue_callback(
-            &self.message_queue, script.to_string(), callback_id, callback, timeout_ms,
-        ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        self.js_callback_manager
+            .enqueue_callback(
+                &self.message_queue,
+                script.to_string(),
+                callback_id,
+                callback,
+                timeout_ms,
+            )
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
         Ok(())
     }
@@ -109,9 +121,15 @@ impl AuroraView {
 
         let internal_callback = Python::attach(|py| py.None());
 
-        self.js_callback_manager.enqueue_callback(
-            &self.message_queue, script.to_string(), callback_id, internal_callback, timeout_ms,
-        ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        self.js_callback_manager
+            .enqueue_callback(
+                &self.message_queue,
+                script.to_string(),
+                callback_id,
+                internal_callback,
+                timeout_ms,
+            )
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
         Ok(callback_id)
     }

@@ -36,7 +36,6 @@ pub(crate) fn configure_with_context<'a>(
     message_queue: Arc<MessageQueue>,
     web_context: &'a mut wry::WebContext,
 ) -> Result<wry::WebViewBuilder<'a>, Box<dyn std::error::Error>> {
-
     // Create the WebView builder
     let mut webview_builder = WryWebViewBuilder::new_with_web_context(web_context);
 
@@ -111,13 +110,22 @@ pub(crate) fn configure_with_context<'a>(
 
     #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
     if message_queue.hosted_state() != 0 {
-        webview_builder = add_hosted_navigation_handler(webview_builder, config, message_queue.clone(), ipc_handler.clone());
+        webview_builder = add_hosted_navigation_handler(
+            webview_builder,
+            config,
+            message_queue.clone(),
+            ipc_handler.clone(),
+        );
     }
 
     // The experimental single-document owner cannot adopt another window.
     let new_window_mode = config.new_window_mode;
     #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
-    let new_window_mode = if message_queue.hosted_state() != 0 { NewWindowMode::Deny } else { new_window_mode };
+    let new_window_mode = if message_queue.hosted_state() != 0 {
+        NewWindowMode::Deny
+    } else {
+        new_window_mode
+    };
     webview_builder = add_new_window_handler(webview_builder, new_window_mode);
 
     // Add content loading
@@ -129,7 +137,8 @@ pub(crate) fn configure_with_context<'a>(
     }
 
     // Add page load handler
-    webview_builder = add_page_load_handler(webview_builder, ipc_handler.clone(), message_queue.clone());
+    webview_builder =
+        add_page_load_handler(webview_builder, ipc_handler.clone(), message_queue.clone());
 
     // Add title change handler
     webview_builder = add_title_change_handler(webview_builder, ipc_handler.clone());
@@ -210,19 +219,25 @@ fn add_navigation_handler<'a>(
     allowed_domains: &[String],
 ) -> wry::WebViewBuilder<'a> {
     let allowed_domains = allowed_domains.to_vec();
-    builder = builder.with_navigation_handler(move |uri| navigation_allowed(&uri, &allowed_domains));
+    builder =
+        builder.with_navigation_handler(move |uri| navigation_allowed(&uri, &allowed_domains));
     builder
 }
 
 fn navigation_allowed(uri: &str, allowed_domains: &[String]) -> bool {
-    if uri.starts_with("auroraview://") || uri.starts_with("data:")
-        || uri.starts_with("about:") || uri.starts_with("blob:") {
+    if uri.starts_with("auroraview://")
+        || uri.starts_with("data:")
+        || uri.starts_with("about:")
+        || uri.starts_with("blob:")
+    {
         return true;
     }
     if let Ok(url) = url::Url::parse(uri) {
         if let Some(host) = url.host_str() {
             for allowed in allowed_domains {
-                if host == allowed || host.ends_with(&format!(".{}", allowed)) { return true; }
+                if host == allowed || host.ends_with(&format!(".{}", allowed)) {
+                    return true;
+                }
             }
         }
     }
@@ -233,7 +248,9 @@ fn navigation_allowed(uri: &str, allowed_domains: &[String]) -> bool {
 /// Keep the existing security filter when overriding the one Wry policy handler.
 #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
 fn add_hosted_navigation_handler<'a>(
-    builder: wry::WebViewBuilder<'a>, config: &WebViewConfig, queue: Arc<MessageQueue>,
+    builder: wry::WebViewBuilder<'a>,
+    config: &WebViewConfig,
+    queue: Arc<MessageQueue>,
     ipc_handler: Arc<IpcHandler>,
 ) -> wry::WebViewBuilder<'a> {
     // HostRuntime rejects initial URL content before native construction.
@@ -244,7 +261,9 @@ fn add_hosted_navigation_handler<'a>(
         let is_initial = uri == "about:blank";
         let allowed = !block_external || navigation_allowed(&uri, &allowed_domains);
         let accepted = queue.hosted_navigation_request(is_initial && allowed);
-        if !accepted { ipc_handler.close_admission(); }
+        if !accepted {
+            ipc_handler.close_admission();
+        }
         accepted
     })
 }
@@ -303,11 +322,14 @@ fn add_page_load_handler<'a>(
         #[cfg(all(target_os = "linux", feature = "experimental-hosted-gtk"))]
         if _message_queue.hosted_state() != 0 {
             if matches!(&event, wry::PageLoadEvent::Started)
-                && !_message_queue.hosted_document_started(url == "about:blank") {
+                && !_message_queue.hosted_document_started(url == "about:blank")
+            {
                 ipc_handler.close_admission();
                 return;
             }
-            if !_message_queue.hosted_ipc_allowed() { return; }
+            if !_message_queue.hosted_ipc_allowed() {
+                return;
+            }
         }
         let event_name = match event {
             wry::PageLoadEvent::Started => "page_load_started",

@@ -106,9 +106,15 @@ impl WebViewProxy {
             script
         );
 
-        self.js_callback_manager.enqueue_callback(
-            &self.message_queue, script.to_string(), callback_id, callback, timeout_ms,
-        ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        self.js_callback_manager
+            .enqueue_callback(
+                &self.message_queue,
+                script.to_string(),
+                callback_id,
+                callback,
+                timeout_ms,
+            )
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
         Ok(())
     }
@@ -157,7 +163,8 @@ impl WebViewProxy {
     /// Reload the current page (thread-safe)
     fn reload(&self) -> PyResult<()> {
         tracing::debug!("[WebViewProxy] Reloading page");
-        self.message_queue.try_push(WebViewMessage::Reload)
+        self.message_queue
+            .try_push(WebViewMessage::Reload)
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
