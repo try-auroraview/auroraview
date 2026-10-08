@@ -155,6 +155,7 @@ class BackendSession:
         self._owns_runtime = stop is not None
         self._connections = []  # type: List[Connection]
         self._pending = []  # type: List[Any]
+        self._invoking = 0
         self._closing = False
         self._cleaning = False
 
@@ -197,7 +198,13 @@ class BackendSession:
 
     @property
     def closed(self) -> bool:
-        return self._closing and not self._connections and not self._pending and self._stop is None
+        return (
+            self._closing
+            and not self._invoking
+            and not self._connections
+            and not self._pending
+            and self._stop is None
+        )
 
     def _track(self, result: Any) -> Any:
         if callable(getattr(result, "cancel", None)) and callable(getattr(result, "done", None)):
@@ -212,8 +219,18 @@ class BackendSession:
             self._pending = remaining
             if not any(pending is result for pending in self._pending):
                 self._pending.append(result)
-            if self._closing:
-                self.close()
+        return result
+
+    def _execute(self, callback: Callable[..., Any], *args: Any) -> Any:
+        # A backend may request close reentrantly before returning its request
+        # handle. Keep its runtime alive through registration of that handle.
+        self._invoking += 1
+        try:
+            result = self._track(callback(*args))
+        finally:
+            self._invoking -= 1
+        if self._closing:
+            self.close()
         return result
 
     def call(self, name: str, params: Any = None) -> Any:
@@ -221,12 +238,12 @@ class BackendSession:
         self._require_active()
         if not isinstance(name, str) or not name:
             raise ValueError("Tool name must be a nonempty string")
-        return self._track(self._invoke_tool(name, params))
+        return self._execute(self._invoke_tool, name, params)
 
     def tools(self) -> Any:
         """Return the public backend's real descriptors, without projection."""
         self._require_active()
-        return self._track(self._list_tools())
+        return self._execute(self._list_tools)
 
     def on(self, event: str, handler: Callable[..., Any]) -> Connection:
         """Subscribe through the existing backend; removable subscriptions are required."""
@@ -285,7 +302,12 @@ class BackendSession:
             self._pending = remaining
             # The existing runtime may own the loop that completes cancellation
             # and unsubscribe. Stop it only after our dependent resources finish.
-            if self._stop is not None and not self._connections and not self._pending:
+            if (
+                self._stop is not None
+                and not self._invoking
+                and not self._connections
+                and not self._pending
+            ):
                 try:
                     _cleanup(self._stop, "Runtime stop")
                 except Exception as exc:

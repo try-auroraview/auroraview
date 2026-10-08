@@ -365,6 +365,49 @@ def test_future_returned_after_reentrant_close_is_still_cancelled():
     assert future.cancelled() and session.closed
 
 
+@pytest.mark.parametrize("operation", ["call", "tools"])
+def test_owned_stop_waits_for_reentrant_operation_to_return_its_future(operation):
+    future = Future()
+    trace = []
+    session = None
+
+    def invoke(*_args):
+        trace.append("invoke")
+        assert not session.close()
+        assert not session.closed
+        assert trace == ["invoke"]
+        trace.append("return future")
+        return future
+
+    def stop():
+        assert future.cancelled()
+        trace.append("stop")
+
+    session = BackendSession.own(invoke_tool=invoke, list_tools=invoke, stop=stop)
+    result = session.call("scene.describe") if operation == "call" else session.tools()
+    assert result is future and future.cancelled() and session.closed
+    assert trace == ["invoke", "return future", "stop"]
+
+
+def test_reentrant_close_during_failed_operation_preserves_error_and_retry_ownership():
+    error = ValueError("existing backend error")
+    stop = Mock(return_value=None)
+    session = None
+
+    def invoke(*_args):
+        assert not session.close()
+        raise error
+
+    session = BackendSession.own(invoke_tool=invoke, list_tools=lambda: [], stop=stop)
+    with pytest.raises(ValueError) as raised:
+        session.call("scene.describe")
+    assert raised.value is error
+    stop.assert_not_called()
+    assert not session.closed
+    assert session.close()
+    stop.assert_called_once()
+
+
 def test_worker_calls_and_notifications_fail_before_touching_backend_or_consumer():
     backend = Backend()
     session = backend.session()
