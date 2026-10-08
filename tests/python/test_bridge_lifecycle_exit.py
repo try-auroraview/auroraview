@@ -10,7 +10,7 @@ pytest.importorskip("websockets")
 
 SOURCE = Path(__file__).resolve().parents[2] / "python/auroraview/integration/bridge.py"
 CHILD = r"""
-import asyncio,atexit,contextlib,importlib.util,json,socket,sys,threading,time
+import asyncio,atexit,contextlib,importlib.util,json,os,socket,sys,threading,time
 spec=importlib.util.spec_from_file_location('owned_bridge',sys.argv[1])
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 Bridge=module.Bridge
@@ -20,7 +20,9 @@ def port():
     with socket.socket() as probe:
         probe.bind(('127.0.0.1',0));return probe.getsockname()[1]
 def released(value):
-    with socket.socket() as probe:probe.bind(('127.0.0.1',value))
+    with socket.socket() as probe:
+        if os.name!='nt':probe.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        probe.bind(('127.0.0.1',value));probe.listen()
 async def running(bridge):
     for _ in range(200):
         if bridge.is_running:return
@@ -30,6 +32,9 @@ async def direct(cancel=False):
     bridge=Bridge(host='127.0.0.1',port=port())
     task=asyncio.create_task(bridge.start())
     await running(bridge)
+    try:released(bridge.port)
+    except OSError:pass
+    else:raise AssertionError('Release probe accepted a live listener')
     await asyncio.sleep(.02)
     if cancel:
         task.cancel()
