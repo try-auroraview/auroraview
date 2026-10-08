@@ -80,7 +80,6 @@ def test_list_changed_files_includes_worktree_and_filters_internal_files(monkeyp
         ],
         ("vx", "git", "ls-files", "--others", "--exclude-standard"): [
             "tests/python/unit/test_harness_changed.py",
-            ".codebuddy/automations/auroraview-auto/memory.md",
             ".gitcommitmsg",
         ],
     }

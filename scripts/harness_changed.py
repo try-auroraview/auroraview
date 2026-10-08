@@ -11,7 +11,7 @@ def _run_name_only(args: List[str]) -> List[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-IGNORED_PREFIXES = (".codebuddy/",)
+IGNORED_PREFIXES = ()
 IGNORED_FILES = {".gitcommitmsg"}
 
 CI_FILES = {
