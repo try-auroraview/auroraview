@@ -115,6 +115,12 @@ Ready event: `window.addEventListener('auroraviewready', () => { ... })`.
 
 ### Event Distribution (Python → JS)
 
+Explicit shared UI/agent tools: `auroraview_dcc_mcp.Tool` and `ToolSet` live in
+the independently packaged `packages/auroraview-dcc-mcp`. A borrowed session
+provides `call(method, params)`, `list_tools()` and removable host subscriptions.
+Attach to an existing DCC-MCP service; do not stop it when a panel closes.
+See [shared tool contracts](https://try-auroraview.github.io/auroraview/guide/dcc-mcp).
+
 Rust/Python events are delivered via `window.auroraview.trigger(event, data)`.
 Do **not** use `window.dispatchEvent(new CustomEvent(...))`.
 

@@ -241,12 +241,25 @@ fn handshake_downgrades_to_legacy_for_a_silent_parent() {
     bridge.disconnect();
 }
 
-#[test]
-fn handshake_reports_rejection() {
+#[rstest]
+#[case::rejected_ack(false)]
+#[case::fatal_error(true)]
+fn handshake_reports_rejection(#[case] fatal: bool) {
     let parent = MockParent::start();
     let bridge = ParentBridge::connect_with_config(config_for(parent.port)).expect("connect");
 
-    parent.ack(false);
+    let (tx, rx) = mpsc::channel();
+    bridge.on_disconnect(move || {
+        let _ = tx.send(());
+    });
+    if fatal {
+        parent.send(r#"{"type":"error","code":"unsupported_protocol","fatal":true}"#);
+    } else {
+        parent.ack(false);
+    }
+    rx.recv_timeout(Duration::from_secs(5))
+        .expect("rejected channel disconnects");
+    assert!(!bridge.is_connected());
 
     assert_eq!(
         bridge.wait_for_handshake(Duration::from_secs(5)),

@@ -19,9 +19,10 @@ clear :class:`ImportError` at use time.
 
 Example::
 
-    from auroraview.dcc_mcp import start_server
+    from auroraview.dcc_mcp import AuroraViewAdapter, start_server
 
-    server = start_server(webview)
+    adapter = AuroraViewAdapter(webview)
+    server = start_server(adapter)
     server.start()
 
 Requires: ``pip install auroraview[dcc-mcp]``

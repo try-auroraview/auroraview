@@ -27,6 +27,19 @@ default:
 check-repository-links:
     vx python scripts/check_repository_links.py
 
+# Optional integration tests stay independent of GUI/native runtime acceptance.
+test-dcc-mcp:
+    vx uv run --extra dcc-mcp pytest tests/python/unit/test_dcc_mcp_adapter.py tests/python/unit/test_dcc_mcp_host.py tests/python/integration/test_dcc_mcp_registration.py tests/python/integration/test_dcc_mcp_coexistence.py tests/python/integration/test_dcc_mcp_skill_isolation.py tests/python/integration/test_dcc_mcp_tool_invocation.py -v
+
+dcc-mcp-package-check:
+    cd packages/auroraview-dcc-mcp; vx just check
+
+test-parent-ipc:
+    vx cargo test -p auroraview-core --test parent_ipc_tests
+
+test-webview-factory:
+    vx uv run python -m pytest tests/python/integration/test_webview.py -k test_create_with_auto_show_true -v
+
 
 # ============================================================================
 # Submodule Migration Tasks

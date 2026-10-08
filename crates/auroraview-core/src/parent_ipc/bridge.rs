@@ -758,7 +758,19 @@ fn reader_loop(weak: Weak<Shared>, mut stream: TcpStream) {
             let _ = socket.shutdown(Shutdown::Both);
         }
     }
-    bridge.set_state(HandshakeState::Disconnected);
+    {
+        let mut state = bridge
+            .shared
+            .handshake
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // A refusal closes the transport too. Keep its cause observable after
+        // teardown so a waiting caller does not race the reader thread.
+        if *state != HandshakeState::Rejected {
+            *state = HandshakeState::Disconnected;
+        }
+    }
+    bridge.shared.handshake_cv.notify_all();
     bridge.notify_disconnected();
 
     if let ReconnectPolicy::Fixed { attempts, interval } = bridge.shared.config.reconnect {

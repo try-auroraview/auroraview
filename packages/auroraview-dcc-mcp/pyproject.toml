@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.17.1,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "auroraview-dcc-mcp"
+version = "0.1.0"
+description = "Explicit shared tool contracts for AuroraView panels and DCC-MCP hosts"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [{name = "Hal Long", email = "hal.long@outlook.com"}]
+dependencies = ["jsonschema>=4.0,<5"]
+
+[project.optional-dependencies]
+core = ["dcc-mcp-core>=0.20.25,<0.21"]
+test = ["pytest>=7", "pytest-timeout>=2", "requests>=2.27"]
+
+[project.urls]
+Source = "https://github.com/try-auroraview/auroraview/tree/main/packages/auroraview-dcc-mcp"
+Documentation = "https://try-auroraview.github.io/auroraview/guide/dcc-mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/auroraview_dcc_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--timeout=60"
+
+[tool.ruff]
+target-version = "py37"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4"]
+ignore = ["E501"]

@@ -1,5 +1,8 @@
 # Bidirectional Communication
 
+To expose one explicitly registered host capability to both a panel and an
+agent, see [Shared UI and agent tools](./dcc-mcp).
+
 AuroraView provides a complete IPC system for **bidirectional communication** between JavaScript and Python.
 
 ## JavaScript API (window.auroraview)

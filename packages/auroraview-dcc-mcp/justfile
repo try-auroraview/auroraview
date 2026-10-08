@@ -1,0 +1,30 @@
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
+
+install:
+    vx uv sync --extra core --extra test
+
+test:
+    vx uv run --extra core --extra test python -m pytest tests -v
+
+lint:
+    vx uvx ruff check python tests ../../scripts/ci/check_dcc_mcp_wheel.py
+    vx uvx ruff format --check python tests ../../scripts/ci/check_dcc_mcp_wheel.py
+
+format:
+    vx uvx ruff check --fix python tests ../../scripts/ci/check_dcc_mcp_wheel.py
+    vx uvx ruff format python tests ../../scripts/ci/check_dcc_mcp_wheel.py
+
+check: lint test
+
+build:
+    vx uv build --out-dir dist
+
+test-py37:
+    vx uv run --python 3.7 --extra core --extra test python -m pytest tests -v
+
+test-core core python:
+    vx uv run --python {{python}} --extra core --extra test --with "dcc-mcp-core=={{core}}" python -m pytest tests -v
+
+# Resolve only the wheel and published dependencies; no editable project install.
+test-wheel wheel core="0.20.41" python="3.11":
+    vx uv run --isolated --no-project --python {{python}} --with "{{wheel}}" --with "dcc-mcp-core=={{core}}" --with pytest --with requests --with pytest-timeout python ../../scripts/ci/check_dcc_mcp_wheel.py --tests tests

@@ -1,0 +1,90 @@
+name: DCC-MCP contracts
+
+on:
+  pull_request:
+    paths:
+      - 'packages/auroraview-dcc-mcp/**'
+      - 'scripts/ci/check_dcc_mcp_wheel.py'
+      - '.github/workflows/dcc-mcp-contracts.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/auroraview-dcc-mcp/**'
+      - 'scripts/ci/check_dcc_mcp_wheel.py'
+      - '.github/workflows/dcc-mcp-contracts.yml'
+    tags: ['auroraview-dcc-mcp-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.7', '3.11']
+        core: ['0.20.25', '0.20.41']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: packages/auroraview-dcc-mcp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: loonghao/vx@6948178844826716e636b474ab322dd8dc115578
+        with:
+          version: '0.9.35'
+          tools: 'just uv'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: vx just test-core ${{ matrix.core }} ${{ matrix.python }}
+        env:
+          AURORAVIEW_TEST_CORE_VERSION: ${{ matrix.core }}
+
+  wheel:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/auroraview-dcc-mcp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: loonghao/vx@6948178844826716e636b474ab322dd8dc115578
+        with:
+          version: '0.9.35'
+          tools: 'just uv'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: vx just lint
+      - run: vx just build
+      - name: Consume the installed wheel outside the checkout
+        shell: bash
+        run: |
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          vx just test-wheel "${wheels[0]}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: auroraview-dcc-mcp-python
+          path: packages/auroraview-dcc-mcp/dist/*
+          if-no-files-found: error
+
+  publish-preview:
+    if: startsWith(github.ref, 'refs/tags/auroraview-dcc-mcp-v')
+    needs: [contracts, wheel]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: auroraview-dcc-mcp-python
+          path: dist
+      - name: Publish verified preview artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          (cd dist && sha256sum ./*.whl ./*.tar.gz > SHA256SUMS)
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --prerelease \
+            --title "AuroraView DCC-MCP $RELEASE_TAG" \
+            --notes-file packages/auroraview-dcc-mcp/README.md

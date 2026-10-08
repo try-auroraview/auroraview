@@ -220,3 +220,121 @@ def test_skill_can_be_loaded_and_exposes_tools(server):
     """Discovery without a loadable skill does not satisfy acceptance."""
     server.load_skill("auroraview-webview")
     assert server.is_skill_loaded("auroraview-webview")
+
+
+def test_stop_releases_the_registered_adapter(server):
+    from auroraview.dcc_mcp import adapter_registry
+
+    owned = server._adapter
+    assert owned in adapter_registry.adapters()
+    server.stop()
+    assert owned not in adapter_registry.adapters()
+    assert server._adapter is None
+
+
+def test_failed_start_does_not_leave_a_registered_adapter(monkeypatch, registry_dir):
+    from dcc_mcp_core.server_base import DccServerBase
+
+    from auroraview.dcc_mcp import adapter_registry
+
+    adapter = AuroraViewAdapter(_FakeWebView())
+    server = start_server(adapter, gateway_port=_free_port(), registry_dir=registry_dir)
+
+    def fail_start(self, **kwargs):
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(DccServerBase, "start", fail_start)
+    with pytest.raises(RuntimeError, match="startup failed"):
+        server.start()
+    assert adapter not in adapter_registry.adapters()
+    assert server._adapter is None
+    server.stop()
+
+
+def test_partial_start_failure_closes_the_live_transport(monkeypatch, registry_dir):
+    from dcc_mcp_core.server_base import DccServerBase
+
+    from auroraview.dcc_mcp import adapter_registry
+
+    adapter = AuroraViewAdapter(_FakeWebView())
+    server = start_server(adapter, gateway_port=_free_port(), registry_dir=registry_dir)
+    base_start = DccServerBase.start
+    started = {}
+
+    def fail_after_start(self, **kwargs):
+        started["handle"] = base_start(self, **kwargs)
+        started["row"] = _wait_for_row(registry_dir, "auroraview")
+        raise RuntimeError("post-start failure")
+
+    monkeypatch.setattr(DccServerBase, "start", fail_after_start)
+    try:
+        with pytest.raises(RuntimeError, match="post-start failure"):
+            server.start()
+        assert started["handle"] is not None
+        assert started["row"] is not None
+        assert not server.is_running
+        assert not any(row.get("dcc_type") == "auroraview" for row in _read_services(registry_dir))
+        assert adapter not in adapter_registry.adapters()
+        assert server._adapter is None
+    finally:
+        server.stop()
+
+
+def test_failed_start_cleanup_retains_the_adapter_until_stop_retry(monkeypatch, registry_dir):
+    import gc
+    import weakref
+
+    from dcc_mcp_core.server_base import DccServerBase
+
+    from auroraview.dcc_mcp import adapter_registry
+    from auroraview.dcc_mcp.server import logger as server_logger
+
+    adapter = AuroraViewAdapter(_FakeWebView())
+    adapter_ref = weakref.ref(adapter)
+    server = start_server(adapter, gateway_port=_free_port(), registry_dir=registry_dir)
+    base_start = DccServerBase.start
+    runtime = server._runtime
+    shutdown_handle = runtime.shutdown_server_handle
+    attempts = []
+    cleanup_errors = []
+
+    def record_cleanup_error(message):
+        # A captured logging traceback would itself keep the adapter alive.
+        cleanup_errors.append((message, str(sys.exc_info()[1])))
+
+    def fail_after_start(self, **kwargs):
+        base_start(self, **kwargs)
+        raise RuntimeError("post-start failure")
+
+    def fail_cleanup_once():
+        attempts.append(True)
+        if len(attempts) == 1:
+            # Core already ran the quit hook, which releases the adapter,
+            # before it reaches transport cleanup. The wrapper must restore it.
+            raise RuntimeError("transport cleanup failed")
+        return shutdown_handle()
+
+    monkeypatch.setattr(DccServerBase, "start", fail_after_start)
+    monkeypatch.setattr(runtime, "shutdown_server_handle", fail_cleanup_once)
+    monkeypatch.setattr(server_logger, "exception", record_cleanup_error)
+    try:
+        with pytest.raises(RuntimeError, match="post-start failure"):
+            server.start()
+        assert len(cleanup_errors) == 1
+        assert "adapter retained" in cleanup_errors[0][0]
+        assert cleanup_errors[0][1] == "transport cleanup failed"
+        assert server.is_running
+        assert server._adapter is adapter
+        assert adapter in adapter_registry.adapters()
+        del adapter
+        gc.collect()
+        assert adapter_ref() is not None
+        server.stop()
+        assert len(attempts) == 2
+        assert not server.is_running
+        assert server._adapter is None
+        assert adapter_ref() not in adapter_registry.adapters()
+        gc.collect()
+        assert adapter_ref() is None
+    finally:
+        server.stop()

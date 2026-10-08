@@ -43,8 +43,15 @@ class _FakeDispatcher:
     def submit(self, job):
         self.jobs.append(job)
 
-    def tick(self):
-        return None
+    def tick(self, *args, **kwargs):
+        self.jobs.append("tick")
+        return types.SimpleNamespace(more_pending=False)
+
+    def has_pending_jobs(self):
+        return False
+
+    def is_shutdown(self):
+        return False
 
 
 @pytest.fixture()
@@ -89,15 +96,24 @@ def fake_qt(monkeypatch):
         def connect(self, cb):
             self._owner.timeout_connect(cb)
 
+        def disconnect(self, cb):
+            assert self._owner._cb is cb
+            self._owner._cb = None
+
     class _App:
         _instance = None
+
+        def thread(self):
+            return "qt-thread"
 
         @classmethod
         def instance(cls):
             return cls._instance
 
     qtcore.QTimer = _Timer
-    qtcore.Qt = types.SimpleNamespace(TimerType=types.SimpleNamespace(PreciseTimer=0))
+    _Timer.deleteLater = lambda self: None
+    qtcore.Qt = types.SimpleNamespace(PreciseTimer=0)
+    qtcore.QThread = types.SimpleNamespace(currentThread=lambda: "qt-thread")
     qtcore.QCoreApplication = _App
     monkeypatch.setitem(sys.modules, "qtpy", types.ModuleType("qtpy"))
     monkeypatch.setitem(sys.modules, "qtpy.QtCore", qtcore)
@@ -106,6 +122,7 @@ def fake_qt(monkeypatch):
 
 def test_host_attaches_and_detaches_a_timer(fake_qt):
     """attach_tick starts a QTimer; detach_tick stops it and is idempotent."""
+    fake_qt.QCoreApplication._instance = fake_qt.QCoreApplication()
     host = AuroraViewQtHost(_FakeDispatcher())
     host.attach_tick(lambda: None)
     assert host._timer is not None
@@ -136,3 +153,43 @@ def test_host_lifecycle_without_starting(fake_qt):
     host = AuroraViewQtHost(_FakeDispatcher())
     assert host.is_running() is False
     assert host._timer is None
+
+
+def test_start_uses_core_lifecycle_on_the_qt_thread(fake_qt):
+    fake_qt.QCoreApplication._instance = fake_qt.QCoreApplication()
+    dispatcher = _FakeDispatcher()
+    host = AuroraViewQtHost(dispatcher, tick_interval_idle=0.125)
+    host.start()
+    assert host.is_running()
+    timer = host._timer
+    timer._cb()
+    assert dispatcher.jobs == ["tick"]
+    assert timer.started[-1] == 125
+    host.stop()
+    assert not host.is_running()
+    assert not timer.isActive()
+    assert timer._cb is None
+
+
+def test_start_requires_a_qt_application(fake_qt):
+    host = AuroraViewQtHost(_FakeDispatcher())
+    with pytest.raises(RuntimeError, match="running Qt application"):
+        host.start()
+    assert host._timer is None
+    assert not host.is_running()
+
+
+def test_start_and_stop_refuse_a_worker_thread(fake_qt):
+    fake_qt.QCoreApplication._instance = fake_qt.QCoreApplication()
+    host = AuroraViewQtHost(_FakeDispatcher())
+    fake_qt.QThread.currentThread = lambda: "worker-thread"
+    with pytest.raises(RuntimeError, match="application thread"):
+        host.start()
+    fake_qt.QThread.currentThread = lambda: "qt-thread"
+    host.start()
+    fake_qt.QThread.currentThread = lambda: "worker-thread"
+    with pytest.raises(RuntimeError, match="application thread"):
+        host.stop()
+    assert host.is_running()
+    fake_qt.QThread.currentThread = lambda: "qt-thread"
+    host.stop()

@@ -106,7 +106,7 @@ AuroraView 为专业DCC应用程序（如Maya、3ds Max、Houdini、Blender、Ph
 - 打包：maturin + abi3 → 单个 wheel 兼容 CPython 3.7-3.13
 - 事件循环：默认阻塞式 show()；后续提供非阻塞模式以适配宿主循环
 - 延迟加载：在 show() 前设置的 URL/HTML 会保存并在创建时应用（最后写入生效）
-- IPC：Python ↔ JavaScript 双向事件总线（基于 CustomEvent）
+- IPC：通过 `window.auroraview` 提供请求/响应调用与事件
 - 协议：自定义协议与资源加载（如 dcc://）
 - 嵌入：支持父窗口句柄（HWND/NSView/WId）的 DCC 宿主嵌入（路线图）
 - 安全：可选的开发者工具、CSP 钩子、远程 URL 白名单（规划中）
@@ -116,7 +116,7 @@ AuroraView 为专业DCC应用程序（如Maya、3ds Max、Houdini、Blender、Ph
 - Python API：`auroraview.WebView` 封装 Rust 核心并提供易用增强
 - Rust 核心：使用 Arc<Mutex<...>> 的内部可变配置，安全支持 show() 前更新
 - 生命周期：在 `show()` 时创建 WebView，并应用 URL/HTML（最后写入生效）
-- JS 桥：Python 侧 `emit(event, data)`；JS 侧通过 `CustomEvent('py', {...})` 回传到 Python（IpcHandler）
+- JS 桥：Python `emit()` 送达 JavaScript `on()`；JavaScript `call()` 与 `send_event()` 送达注册的 Python 处理器
 - 日志：Rust 端 `tracing`；Python 端 `logging`
 - 测试：pytest 冒烟 + cargo 测试；CI 构建三平台 wheel
 
@@ -1498,7 +1498,7 @@ auroraview pack --config app.toml --no-console --build
 - [架构设计](./docs/zh/guide/architecture.md) - 核心、绑定与原生宿主职责
 - [设计理念](./docs/zh/guide/design-philosophy.md) - 集成原则与实现选择
 - [DCC 集成指南](./docs/zh/dcc/index.md) - 各宿主的安装步骤与限制
-- [DCC-MCP 集成](./docs/mcp/dcc-mcp-integration.md) - 显式注册、发现与工具契约（英文）
+- [UI 与 Agent 工具契约](./docs/zh/guide/dcc-mcp.md) - 独立 Python 契约、借用服务与生命周期清理
 - [开发提案](./docs/rfcs/) - 设计提案及实现状态
 
 ### Maya 集成专题

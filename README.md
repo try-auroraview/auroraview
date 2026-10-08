@@ -127,7 +127,7 @@ server.stop()
 - Packaging: maturin wheels; CPython 3.8+ uses abi3 per platform, CPython 3.7 uses dedicated cp37 wheels on Linux/Windows and source builds on macOS
 - Event loop: blocking show() by default; nonblocking mode planned for host loops
 - Deferred loading: URL/HTML set before show() are stored then applied at creation
-- IPC: bidirectional event bus (Python ↔ JavaScript via CustomEvent)
+- IPC: request/response calls and events through `window.auroraview`
 - Protocols: custom scheme/resource loaders for local assets (e.g., dcc://)
 - Embedding: parent window handle (HWND/NSView/WId) roadmap for DCC hosts
 - Security: optin devtools, CSP hooks, remote URL allowlist (planned)
@@ -137,7 +137,7 @@ server.stop()
 - Python API: `auroraview.WebView` wraps Rust core with ergonomic helpers
 - Rust core: interiormutable config (Arc<Mutex<...>>) enables safe preshow updates
 - Lifecycle: create WebView on `show()`, then apply lastwritewins URL/HTML
-- JS bridge: `emit(event, data)` from Python; `window.dispatchEvent(new CustomEvent('py', {detail:{event:'xyz', data:{...}}}))` from JS back to Python via IpcHandler
+- JS bridge: Python `emit()` reaches JavaScript `on()`; JavaScript `call()` and `send_event()` reach registered Python handlers
 - Logging: `tracing` on Rust side; `logging` on Python side
 - Testing: pytest unit smoke + cargo tests; wheels built in CI for 3 OSes
 
@@ -1600,7 +1600,7 @@ auroraview pack --config app.toml --no-console --build
 - [Architecture](./docs/guide/architecture.md) - Core, bindings and native host responsibilities
 - [Design Philosophy](./docs/guide/design-philosophy.md) - Integration principles and implementation choices
 - [DCC Integration Guide](./docs/dcc/index.md) - Host-specific setup and limitations
-- [DCC-MCP Integration](./docs/mcp/dcc-mcp-integration.md) - Explicit registration, discovery and tool contracts
+- [Shared UI and agent tools](./docs/guide/dcc-mcp.md) - Independent Python contracts, borrowed services and cleanup
 - [Development Proposals](./docs/rfcs/) - Design proposals and implementation status
 
 ## DCC Software Support

@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import weakref
 from typing import Any, Dict, Optional
 
 from . import adapter_registry
@@ -66,6 +67,7 @@ def start_server(
     display_name: Optional[str] = None,
     skill_paths: Optional[list] = None,
     enable_telemetry: bool = False,
+    dispatcher: Optional[Any] = None,
 ) -> Any:
     """Build a ``DccServerBase`` for an AuroraView adapter.
 
@@ -84,6 +86,9 @@ def start_server(
             instances are running. Defaults to the WebView window title.
         skill_paths: Extra directories to scan for skill packages.
         enable_telemetry: Forwarded to core; off by default.
+        dispatcher: Existing host dispatcher for Core's execution bridge.
+            Embedded hosts must supply their host-thread dispatcher. Omission
+            retains the legacy inline path for standalone callers.
 
     Returns:
         A configured ``dcc_mcp_core.server_base.DccServerBase``.
@@ -124,24 +129,61 @@ def start_server(
         enable_telemetry=enable_telemetry,
     )
 
-    server = DccServerBase(options)
+    adapter_ref = weakref.ref(adapter)
 
-    # Register the adapter so skill scripts can reach it. Without this, skills
-    # are discoverable and loadable but every invocation fails.
-    adapter_registry.register(adapter)
+    class AuroraViewServer(DccServerBase):
+        def start(self, **kwargs):
+            live = self._adapter or adapter_ref()
+            if live is None:
+                raise RuntimeError("AuroraView adapter was released before server startup")
+            self._adapter = live
+            adapter_registry.register(live)
+            try:
+                return super().start(**kwargs)
+            except BaseException:
+                try:
+                    super().stop()
+                except BaseException:
+                    self._adapter = live
+                    adapter_registry.register(live)
+                    logger.exception(
+                        "Server startup cleanup failed; adapter retained for stop retry"
+                    )
+                else:
+                    adapter_registry.unregister(live)
+                    self._adapter = None
+                raise
 
-    # NOTE: we deliberately do NOT call register_inprocess_executor().
-    # Core's HostExecutionBridge._dispatch_raw requires a dispatcher exposing
-    # `is_host_thread`, `dispatch_callable`, or the post/tick queue API; with
-    # none of those it raises TypeError, which is swallowed into an error
-    # envelope -- so every tool call would fail with a TypeError instead of
-    # running. Leaving the dispatcher unset makes core invoke the callable
-    # inline, which is the path that works. Host-thread dispatch for tool
-    # execution belongs on the QueueDispatcher (see AuroraViewQtHost).
-    #
-    # If a dispatcher is ever registered here it must satisfy core's
-    # protocol; tests assert that by reading core's own registration state
-    # (`server._dcc_dispatcher` / `server._execution_bridge`).
+        def stop(self):
+            live = self._adapter or adapter_ref()
+            try:
+                result = super().stop()
+            except BaseException:
+                if live is not None:
+                    self._adapter = live
+                    adapter_registry.register(live)
+                raise
+            else:
+                if live is not None:
+                    adapter_registry.unregister(live)
+                self._adapter = None
+                return result
+
+    server = AuroraViewServer(options)
+    server._adapter = adapter
+    server_ref = weakref.ref(server)
+
+    def release_adapter():
+        live = adapter_ref()
+        if live is not None:
+            adapter_registry.unregister(live)
+        live_server = server_ref()
+        if live_server is not None:
+            live_server._adapter = None
+
+    server.register_quit_hook(release_adapter)
+    if dispatcher is not None:
+        server.register_inprocess_executor(dispatcher)
 
     paths = [p for p in (skill_paths or []) if p]
     if paths:

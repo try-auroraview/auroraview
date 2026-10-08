@@ -1,5 +1,7 @@
 # 双向通信
 
+同一宿主能力需要同时供面板与 Agent 调用时，请参阅[UI 与 Agent 工具契约](./dcc-mcp)。
+
 AuroraView 提供完整的 IPC 系统，用于 **JavaScript 与 Python 的双向通信**。
 
 ## JavaScript API（window.auroraview）

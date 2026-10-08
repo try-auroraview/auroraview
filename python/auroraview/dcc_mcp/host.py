@@ -18,6 +18,7 @@ never takes over the message pump.
 from __future__ import annotations
 
 import logging
+import weakref
 from typing import Any, Callable, Optional
 
 from ._compat import require_core as _require_core
@@ -69,7 +70,19 @@ class AuroraViewQtHost:
         tick_interval_idle: float = DEFAULT_IDLE_INTERVAL,
         name: str = "auroraview-host",
     ):
-        self._base = _host_adapter_base()(
+        owner = weakref.proxy(self)
+
+        class QtHostAdapter(_host_adapter_base()):
+            def is_background(self):
+                return owner.is_background()
+
+            def attach_tick(self, tick_fn):
+                owner.attach_tick(tick_fn)
+
+            def detach_tick(self):
+                owner.detach_tick()
+
+        self._base = QtHostAdapter(
             dispatcher,
             tick_interval_active=tick_interval_active,
             tick_interval_idle=tick_interval_idle,
@@ -77,6 +90,18 @@ class AuroraViewQtHost:
         )
         self._timer = None
         self._tick_fn: Optional[Callable[[], Any]] = None
+
+    @staticmethod
+    def _require_qt_thread():
+        """Refuse dispatch unless the caller owns the running Qt application."""
+        from qtpy import QtCore
+
+        app = QtCore.QCoreApplication.instance()
+        if app is None:
+            raise RuntimeError("AuroraViewQtHost requires a running Qt application")
+        if QtCore.QThread.currentThread() != app.thread():
+            raise RuntimeError("AuroraViewQtHost must run on the Qt application thread")
+        return QtCore
 
     # ------------------------------------------------------------------
     # HostAdapter hooks
@@ -102,15 +127,22 @@ class AuroraViewQtHost:
             tick_fn: Zero-argument callable returning the next interval in
                 seconds, or ``None`` to cancel.
         """
-        from qtpy import QtCore  # type: ignore[import-not-found]
-
+        QtCore = self._require_qt_thread()
         self.detach_tick()
         timer = QtCore.QTimer()
-        timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
-        timer.timeout.connect(tick_fn)
+
+        def tick():
+            interval = tick_fn()
+            if interval is None:
+                timer.stop()
+            else:
+                timer.start(max(1, int(interval * 1000)))
+
+        timer.setTimerType(QtCore.Qt.PreciseTimer)
+        timer.timeout.connect(tick)
         timer.start(max(1, int(DEFAULT_IDLE_INTERVAL * 1000)))
         self._timer = timer
-        self._tick_fn = tick_fn
+        self._tick_fn = tick
         logger.debug("AuroraViewQtHost attached dispatcher tick to QTimer")
 
     def detach_tick(self) -> None:
@@ -118,10 +150,10 @@ class AuroraViewQtHost:
         timer = self._timer
         if timer is None:
             return
-        try:
-            timer.stop()
-        except Exception:  # pragma: no cover - defensive teardown
-            logger.debug("Failed to stop AuroraViewQtHost timer", exc_info=True)
+        self._require_qt_thread()
+        timer.stop()
+        timer.timeout.disconnect(self._tick_fn)
+        timer.deleteLater()
         self._timer = None
         self._tick_fn = None
 
@@ -130,7 +162,8 @@ class AuroraViewQtHost:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Start the dispatcher on the Qt event loop (or a thread when headless)."""
+        """Start dispatch on the Qt application thread; headless use is refused."""
+        self._require_qt_thread()
         self._base.start()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -139,6 +172,8 @@ class AuroraViewQtHost:
         Args:
             timeout: Seconds to wait for the dispatcher to drain.
         """
+        if self._timer is not None:
+            self._require_qt_thread()
         try:
             self._base.stop(timeout=timeout)
         finally:

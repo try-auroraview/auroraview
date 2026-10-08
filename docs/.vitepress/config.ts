@@ -44,6 +44,7 @@ export default defineConfig({
               items: [
                 { text: 'WebView 基础', link: '/zh/guide/webview-basics' },
                 { text: '双向通信', link: '/zh/guide/communication' },
+                { text: 'UI 与 Agent 工具契约', link: '/zh/guide/dcc-mcp' },
                 { text: '自定义协议', link: '/zh/guide/custom-protocol' },
                 { text: 'TypeScript SDK', link: '/zh/guide/typescript-sdk' },
               ]
@@ -153,6 +154,7 @@ export default defineConfig({
           items: [
             { text: 'WebView Basics', link: '/guide/webview-basics' },
             { text: 'Communication', link: '/guide/communication' },
+            { text: 'Shared UI and agent tools', link: '/guide/dcc-mcp' },
             { text: 'Custom Protocol', link: '/guide/custom-protocol' },
             { text: 'TypeScript SDK', link: '/guide/typescript-sdk' },
           ]
