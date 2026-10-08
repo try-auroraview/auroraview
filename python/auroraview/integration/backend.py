@@ -125,7 +125,8 @@ class BackendSession:
     Closing invalidates notifications immediately and attempts every owned
     cleanup. Failures raise BackendCleanupError and remain retryable. False
     means a cancellation or reentrant subscription is still completing; call
-    close again on the owner thread after the existing loop has advanced.
+    close again on the owner thread after the existing loop has advanced. An
+    owned runtime stops only after subscriptions and pending calls are cleaned.
     """
 
     def __init__(
@@ -282,8 +283,9 @@ class BackendSession:
                     remaining.append(pending)
                     errors.append(("cancel", exc))
             self._pending = remaining
-            busy = any(item._subscribing or item._disposing for item in self._connections)
-            if self._stop is not None and not busy:
+            # The existing runtime may own the loop that completes cancellation
+            # and unsubscribe. Stop it only after our dependent resources finish.
+            if self._stop is not None and not self._connections and not self._pending:
                 try:
                     _cleanup(self._stop, "Runtime stop")
                 except Exception as exc:

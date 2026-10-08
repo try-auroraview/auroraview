@@ -175,12 +175,16 @@ def test_owned_close_tries_all_resources_retains_failures_and_retries_only_failu
     backend.stop.side_effect = [ValueError("stop failed"), None]
     with pytest.raises(BackendCleanupError) as raised:
         session.close()
-    assert [name for name, _ in raised.value.errors] == ["disconnect", "cancel", "stop"]
+    assert [name for name, _ in raised.value.errors] == ["disconnect", "cancel"]
     assert not first.active and not first.disposed
     assert second.disposed
     assert not session.closed
-    backend.stop.assert_called_once()
+    backend.stop.assert_not_called()
     pending.done.return_value = True
+    with pytest.raises(BackendCleanupError) as raised:
+        session.close()
+    assert [name for name, _ in raised.value.errors] == ["stop"]
+    assert first.disposed and not session.closed
     assert session.close()
     assert session.closed and session.owns_runtime
     assert first.disposed
@@ -239,6 +243,27 @@ def test_asyncio_task_cancellation_completes_on_existing_owner_loop():
         assert task.cancelled()
         assert session.close()
         backend.stop.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_owned_runtime_stop_waits_for_cancellation_on_its_existing_loop():
+    async def scenario():
+        async def wait():
+            await asyncio.Future()
+
+        backend = Backend()
+        session = backend.session(own=True)
+        task = asyncio.create_task(wait())
+        backend.result = task
+        session.call("unreal.scene.describe")
+        await asyncio.sleep(0)
+        assert not session.close()
+        backend.stop.assert_not_called()
+        await asyncio.sleep(0)
+        assert task.cancelled()
+        assert session.close()
+        backend.stop.assert_called_once()
 
     asyncio.run(scenario())
 
@@ -427,10 +452,14 @@ def test_async_cleanup_returned_by_sync_callable_is_rejected_and_retained_for_re
     backend.stop.side_effect = cleanup
     with pytest.raises(BackendCleanupError) as raised:
         session.close()
-    assert [name for name, _ in raised.value.errors] == ["disconnect", "stop"]
+    assert [name for name, _ in raised.value.errors] == ["disconnect"]
     assert all(isinstance(error, TypeError) for _, error in raised.value.errors)
     assert not connection.active and not connection.disposed and not session.closed
+    backend.stop.assert_not_called()
     backend.removers[0].side_effect = None
+    with pytest.raises(BackendCleanupError) as raised:
+        session.close()
+    assert [name for name, _ in raised.value.errors] == ["stop"]
     backend.stop.side_effect = None
     assert session.close()
 
