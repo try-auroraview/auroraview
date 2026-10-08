@@ -40,8 +40,8 @@ identifier = "com.auroraview.gallery"
 description = "Interactive showcase of all AuroraView features and components"
 authors = ["AuroraView Team"]
 license = "MIT"
-homepage = "https://github.com/AuroraView/auroraview"
-repository = "https://github.com/AuroraView/auroraview"
+homepage = "https://github.com/try-auroraview/auroraview"
+repository = "https://github.com/try-auroraview/auroraview"
 allow_new_window = true
 
 # ============================================================================
