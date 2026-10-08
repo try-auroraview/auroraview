@@ -34,20 +34,19 @@ Every tool command goes through `vx`; task orchestration goes through
 | `docs/` | VitePress site for humans (DCC integration, API, RFCs); `docs/zh/` is the Chinese mirror |
 | `llms.txt` | AI-friendly core usage index (5-minute read) |
 | `llms-full.txt` | Complete usage index — every API signature and module note |
-| `.codebuddy/rules/` | Topic-split execution rules — the real constraints behind CI and local dev |
 
 ## Task → where to look
 
 | Your task | Go here |
 |---|---|
 | Understand the architecture and conventions | `llms.txt` |
-| Write / change / review code | `.codebuddy/rules/` (8 topic files) |
 | Look up full API and architecture detail | `llms-full.txt` |
 | Human-readable deep docs | `docs/` |
-| Packaging, release, CI | `.codebuddy/rules/08-architecture.mdc` |
-| Front-end JS ↔ Python bridge | `.codebuddy/rules/05-frontend-api.mdc` + `07-event-system.mdc` |
-| Python layer API | `.codebuddy/rules/06-python-api.mdc` |
-| Test strategy | `.codebuddy/rules/03-testing.mdc` |
+| Packaging internals, release, CI | `docs/contributing/pack-architecture.md` |
+| Injected JavaScript layout | `docs/architecture/js-assets.md` |
+| Front-end JS ↔ Python bridge | `docs/guide/communication.md` |
+| Python layer API | `llms-full.txt` + `python/auroraview/` |
+| CI pipeline | `docs/contributing/ci-pipeline.md` |
 
 ## 30-second orientation
 
@@ -81,8 +80,8 @@ Every tool command goes through `vx`; task orchestration goes through
 - **Do** put Rust integration tests in each crate's `tests/` directory using
   `rstest`; **don't** write inline unit tests.
 - **Do** treat `crates/auroraview-cli/skills/<name>/SKILL.md` as the source of
-  truth for Skills — `.cursor/skills/` and `.claude/skills/` are local mirrors,
-  never copy into them.
+  truth for Skills — `auroraview-cli skills install` redistributes them into
+  each tool's local mirror, never copy into those mirrors by hand.
 - **Do** dispatch all front-end events through `window.auroraview.trigger()`;
   **don't** mix in native `CustomEvent`.
 - **Don't** hardcode an exact version in tests (`assert __version__ == "X.Y.Z"`)

@@ -22,7 +22,6 @@ STALE_LINK = re.compile(
 )
 SOURCE_DIRECTORIES = (
     ".github",
-    ".codebuddy/rules",
     "crates",
     "docs",
     "examples",
