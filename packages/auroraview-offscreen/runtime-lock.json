@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "publisher": "electron/electron",
+  "version": "44.7.0",
+  "platform": "win32-x64",
+  "release_api": "https://api.github.com/repos/electron/electron/releases/tags/v44.7.0",
+  "release_url": "https://github.com/electron/electron/releases/tag/v44.7.0",
+  "archive": {
+    "name": "electron-v44.7.0-win32-x64.zip",
+    "url": "https://github.com/electron/electron/releases/download/v44.7.0/electron-v44.7.0-win32-x64.zip",
+    "size": 158293649,
+    "sha256": "eee30dc8fa1f5ea95490e59f44e46ea68dd24c6e93d22facf70fe5c2d4c2665c"
+  },
+  "checksums": {
+    "name": "SHASUMS256.txt",
+    "url": "https://github.com/electron/electron/releases/download/v44.7.0/SHASUMS256.txt",
+    "size": 6740,
+    "sha256": "ae1159fdb6d008ca267c267edb6dd82ded692529c9a930386452511aaaddb7b1"
+  },
+  "licenses": ["LICENSE", "LICENSES.chromium.html"],
+  "sources": {
+    "electron": "https://github.com/electron/electron/tree/v44.7.0",
+    "electron_license": "https://github.com/electron/electron/blob/v44.7.0/LICENSE",
+    "dependencies": "https://github.com/electron/electron/blob/v44.7.0/DEPS",
+    "chromium": "https://chromium.googlesource.com/chromium/src/+/152.0.7977.130",
+    "node": "https://github.com/nodejs/node/tree/v24.21.0",
+    "build_configuration": "https://github.com/electron/electron/blob/v44.7.0/build/args/release.gn"
+  },
+  "redistribution": {
+    "electron_license": "MIT",
+    "third_party_notices": "Preserve the complete publisher runtime and LICENSES.chromium.html. The runtime includes Chromium, Node.js and dynamically linked FFmpeg under their respective licenses.",
+    "ffmpeg": "The publisher release configuration enables proprietary codecs and shared FFmpeg. Preserve ffmpeg.dll and corresponding notices; this artifact is not a claim that every runtime component is MIT-licensed."
+  }
+}

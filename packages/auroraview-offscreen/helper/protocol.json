@@ -1,0 +1,35 @@
+{
+  "protocol": 1,
+  "transport": {
+    "commands": "UTF-8 newline-delimited JSON on child stdin; maximum 1048576 bytes per line excluding newline",
+    "messages": "child stdout: uint32LE header_bytes, uint32LE payload_bytes, UTF-8 JSON header, binary payload",
+    "maximum_header_bytes": 65536,
+    "maximum_payload_bytes": 67108864,
+    "diagnostics": "stderr only",
+    "parent_eof": "destroy all surfaces and exit without waiting for pending commands",
+    "launcher": "electron helper/stdio.cjs with ELECTRON_RUN_AS_NODE=1; after assigning process-tree ownership and configuring streams, parent sends private first line {type:start}; only then broker spawns the hidden GUI renderer over a private authenticated local pipe, with no TCP listener",
+    "windows_bootstrap": "GUI Electron emits a startup CRLF and cannot read parent stdin; the Node-mode broker routes GUI bootstrap diagnostics to stderr, keeping public stdout strictly binary",
+    "profile": "private temporary Chromium userData/sessionData per broker; surfaces in a process share the profile, separate renderer processes never share cache or profile locks; broker removes only its owned temporary directory"
+  },
+  "identity": {"surface_id": "[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", "generation": "positive safe integer, increasing when an id is recreated"},
+  "limits": {"live_surfaces": 8, "width": [1,4096], "height": [1,4096], "queued_commands": 128, "pending_calls_per_surface": 256},
+  "commands": {
+    "create": {"required": ["surface_id","generation","width","height"], "exactly_one": ["html","url"], "url_schemes": ["https","http","file"]},
+    "resize": {"required": ["surface_id","generation","width","height"]},
+    "input": {"required": ["surface_id","generation","event"], "event_types": ["mouseMove","mouseDown","mouseUp","mouseWheel","keyDown","keyUp","text","focus"], "fields": ["type","x","y","button","buttons","click_count","delta_x","delta_y","key","code","modifiers","text","focused"], "coordinates": "top-left CSS pixels", "modifiers": {"alt":1,"control":2,"meta":4,"shift":8}, "text": "committed Unicode text; full native IME candidate/composition integration is not provided", "focus": "logical Chromium focus emulation only; the native helper window stays hidden and unfocusable"},
+    "call_result": {"required": ["surface_id","generation","id","ok"], "optional": ["result","error"], "error": {"required": ["message"], "optional": ["name","code","data"]}},
+    "emit": {"required": ["surface_id","generation","event"], "optional": ["detail"]},
+    "close": {"required": ["surface_id","generation"]},
+    "shutdown": {"required": []}
+  },
+  "messages": {
+    "ready": "global protocol/electron/pid handshake; per-surface ready also contains identity, width/height, resize_revision, visible:false, focused:false",
+    "frame": {"required": ["surface_id","generation","seq","resize_revision","width","height","stride","format","alpha","origin"], "format":"rgba8", "alpha":"straight", "origin":"top-left", "stride":"width * 4", "payload":"exactly width * height * 4 bytes; whole frame", "seq":"starts at 1, strictly increasing per generation; dropped frames cause gaps", "resize_revision":"starts at 0, increases once per accepted resize including unchanged dimensions; old-size frames are discarded", "scale":"device scale forced to 1, CSS dimensions equal pixel dimensions"},
+    "call": {"required": ["surface_id","generation","id","method"], "optional": ["params"]},
+    "event": {"required": ["surface_id","generation","event"], "optional": ["detail"]},
+    "error": {"required": ["code","message"], "optional": ["surface_id","generation"]},
+    "closed": {"required": ["surface_id","generation"]}
+  },
+  "backpressure": "one in-flight envelope plus a latest-frame mailbox per surface; pending output bytes bounded to 64 MiB plus one header; control messages are ordered and take priority over pending frames",
+  "bridge": "existing @auroraview/sdk event_bridge; no arbitrary eval command and no exposed native plugin invocation"
+}
