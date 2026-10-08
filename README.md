@@ -7,6 +7,13 @@
 </p>
 
 <p align="center">
+  <a href="https://try-auroraview.github.io/">Website</a> ·
+  <a href="https://try-auroraview.github.io/auroraview/">Documentation</a> ·
+  <a href="https://try-auroraview.github.io/#examples">Host tutorials</a> ·
+  <a href="https://github.com/try-auroraview">Organization</a>
+</p>
+
+<p align="center">
   <a href="https://pypi.org/project/auroraview/"><img src="https://img.shields.io/pypi/v/auroraview.svg" alt="PyPI Version"></a>
   <a href="https://pypi.org/project/auroraview/"><img src="https://img.shields.io/pypi/pyversions/auroraview.svg" alt="Python Versions"></a>
   <a href="https://pepy.tech/project/auroraview"><img src="https://static.pepy.tech/badge/auroraview" alt="Downloads"></a>
@@ -454,7 +461,7 @@ uvx auroraview --url https://example.com
 > uvx --python 3.7 --from auroraview python -m auroraview --url https://example.com
 > ```
 
-**[See CLI Documentation](./docs/CLI.md)** for more details.
+**[See CLI Documentation](./docs/guide/cli.md)** for more details.
 
 ### Custom Window Icon
 
@@ -1144,7 +1151,7 @@ run_standalone(
 > **Note**: The `path_to_file_url()` helper converts local paths to proper `file:///` URLs.
 > Example: `C:\images\logo.gif` → `file:///C:/images/logo.gif`
 
-See [examples/custom_protocol_example.py](./examples/custom_protocol_example.py) and [examples/local_assets_example.py](./examples/local_assets_example.py) for complete examples.
+See the [custom protocol guide](./docs/guide/custom-protocol.md) and [examples/local_assets_example.py](./examples/local_assets_example.py) for complete examples.
 
 
 #### 2. Qt Backend
@@ -1409,7 +1416,7 @@ webview.eval_js(injection_script)
 webview.show()
 ```
 
-For detailed guide, see [Third-Party Integration Guide](./docs/THIRD_PARTY_INTEGRATION.md).
+For agent and browser automation, see the [AI Agent and CDP guide](./docs/guide/ai-agent-cdp.md).
 
 ### System Tray Support
 
@@ -1590,24 +1597,28 @@ auroraview pack --config app.toml --no-console --build
 
 ## Documentation
 
--  [Architecture](./docs/ARCHITECTURE.md) - Modular backend architecture
--  [Technical Design](./docs/TECHNICAL_DESIGN.md) - Technical implementation details
--  [DCC Integration Guide](./docs/DCC_INTEGRATION_GUIDE.md) - Integration with DCC applications
--  [Third-Party Integration Guide](./docs/THIRD_PARTY_INTEGRATION.md) - JavaScript injection and AI chat integration
--  [Project Roadmap](./docs/ROADMAP.md) - Future plans and development
+- [Architecture](./docs/guide/architecture.md) - Core, bindings and native host responsibilities
+- [Design Philosophy](./docs/guide/design-philosophy.md) - Integration principles and implementation choices
+- [DCC Integration Guide](./docs/dcc/index.md) - Host-specific setup and limitations
+- [DCC-MCP Integration](./docs/mcp/dcc-mcp-integration.md) - Explicit registration, discovery and tool contracts
+- [Development Proposals](./docs/rfcs/) - Design proposals and implementation status
 
 ## DCC Software Support
 
-| DCC Software | Status | Python Version | Example |
-|--------------|--------|----------------|---------|
-| Maya | [OK] Supported | 3.7+ | [Maya Outliner Example](https://github.com/loonghao/auroraview-maya-outliner) |
-| 3ds Max | [OK] Supported | 3.7+ | - |
-| Houdini | [OK] Supported | 3.7+ | - |
-| Blender | [OK] Supported | 3.7+ | - |
-| Photoshop | [CONSTRUCTION] Planned | 3.7+ | - |
-| Unreal Engine | [CONSTRUCTION] Planned | 3.7+ | - |
+| Host | Integration source | Tutorial or verification |
+|------|--------------------|--------------------------|
+| Maya | [Qt integration](./docs/dcc/maya.md) | [Outliner tutorial](https://github.com/try-auroraview/auroraview-maya-outliner) |
+| 3ds Max | [Host guide](./docs/dcc/3dsmax.md) | See the host guide for setup and limitations |
+| Houdini | [Adapter](https://github.com/try-auroraview/auroraview-houdini) | See the adapter's validation notes |
+| Blender | [Adapter](https://github.com/try-auroraview/auroraview-blender) | Native WebView docking verification is tracked in the adapter |
+| Unreal Engine | [Adapter](https://github.com/try-auroraview/auroraview-unreal) | Native Editor docking verification is tracked in the adapter |
+| Unity Editor | [Adapter and tutorial](https://github.com/try-auroraview/auroraview-unity) | Windows WebView2 integration; see its validation notes |
+| Nuke | [Adapter](https://github.com/try-auroraview/auroraview-nuke) | See the adapter's validation notes |
 
-> **📚 Examples**: For a complete working example, check out the [Maya Outliner Example](https://github.com/loonghao/auroraview-maya-outliner) - a modern, web-based Maya Outliner built with AuroraView, Vue 3, and TypeScript.
+Host versions, platform limits and completed acceptance checks are recorded in
+each adapter and the [verification directory](https://try-auroraview.github.io/#ecosystem).
+
+> **📚 Examples**: For a complete working example, check out the [Maya Outliner Example](https://github.com/try-auroraview/auroraview-maya-outliner) - a modern, web-based Maya Outliner built with AuroraView, Vue 3, and TypeScript. The [host tutorial directory](https://try-auroraview.github.io/#examples) links runnable demos separately from host adapters and records their verification status.
 
 ## Development
 
