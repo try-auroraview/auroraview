@@ -140,25 +140,48 @@ class TestZombieReferenceFix:
         finally:
             webview.deleteLater()
 
-    def test_reuse_after_close_resets_is_closing(self, qapp):
-        """showEvent after close should reset _is_closing for reuse."""
-        from qtpy.QtGui import QCloseEvent, QShowEvent
+    def test_closed_webview_requires_fresh_instance(self, qapp):
+        """A fresh view works while the closed view's timer and callbacks stay revoked."""
+        from qtpy.QtGui import QCloseEvent
 
         from auroraview import QtWebView
 
-        webview = QtWebView()
+        webview = QtWebView(auto_prewarm=False)
+        fresh = None
         try:
-            # Close
-            close_event = QCloseEvent()
-            webview.closeEvent(close_event)
-            assert webview._is_closing is True
+            closed_core = webview._webview
+            assert closed_core._auto_timer is not None
+            stale_calls = []
+            webview.register_callback("test_event", stale_calls.append)
+            with closed_core._event_handlers_lock:
+                stale_handlers = list(closed_core._event_handlers["test_event"])
 
-            # Re-show
-            show_event = QShowEvent()
-            webview.showEvent(show_event)
-            assert webview._is_closing is False
-            assert webview.is_alive is True
+            webview.closeEvent(QCloseEvent())
+            assert webview._is_closing is True
+            assert webview.is_alive is False
+            assert closed_core._auto_timer is None
+            assert closed_core.cleanup_pending is False
+            with pytest.raises(RuntimeError, match="create a fresh WebView"):
+                closed_core.show()
+
+            fresh = QtWebView(auto_prewarm=False)
+            assert fresh._is_closing is False
+            assert fresh.is_alive is True
+            assert fresh._webview is not closed_core
+            received = []
+            fresh.register_callback("test_event", received.append)
+            payload = {"value": 42}
+            fresh._webview.signals.custom.emit("test_event", payload)
+            assert received == [payload]
+
+            for callback in stale_handlers:
+                callback(payload)
+            assert stale_calls == []
+            assert webview.is_alive is False
         finally:
+            if fresh is not None:
+                fresh.close()
+                fresh.deleteLater()
             webview.deleteLater()
 
     def test_about_to_close_signal_before_state_change(self, qapp):
