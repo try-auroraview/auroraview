@@ -8,9 +8,9 @@
 - Authors: AuroraView Core Team
 - Affected code: `crates/auroraview-contract`, `crates/auroraview-core/src/backend/`, `src/webview/backend/`, `crates/auroraview-ue`, `python/auroraview/adapter/`, `python/auroraview/utils/thread_dispatcher/`, `python/auroraview/dcc_mcp/`, `crates/auroraview-cli/skills/`
 - Related:
-  - [PR #471](https://github.com/loonghao/auroraview/pull/471) — host-adapter and render-backend contracts (**merged 2026-09-22**; lands §1/§2 of this RFC's contract layer)
-  - [PR #463](https://github.com/loonghao/auroraview/pull/463) — host-agnostic parent/child IPC bridge and `--parent-hwnd` embedding (**merged 2026-09-22**)
-  - [PR #460](https://github.com/loonghao/auroraview/pull/460) — DCC-MCP WebView adapter (**merged 2026-09-19**)
+  - [PR #471](https://github.com/try-auroraview/auroraview/pull/471) — host-adapter and render-backend contracts (**merged 2026-09-22**; lands §1/§2 of this RFC's contract layer)
+  - [PR #463](https://github.com/try-auroraview/auroraview/pull/463) — host-agnostic parent/child IPC bridge and `--parent-hwnd` embedding (**merged 2026-09-22**)
+  - [PR #460](https://github.com/try-auroraview/auroraview/pull/460) — DCC-MCP WebView adapter (**merged 2026-09-19**)
   - [`docs/design/adapter-contract.md`](../design/adapter-contract.md) — the design record for #471; **this RFC is its RFC-layer counterpart**
   - RFC 0007 (WebView/Browser unified architecture), RFC 0011 (unified IPC), RFC 0018 (packed CLI mode)
 
@@ -36,8 +36,8 @@
 
 ### 0.1 Relationship to PR #471 (read this first)
 
-This RFC was drafted before [#471](https://github.com/loonghao/auroraview/pull/471) and
-[#463](https://github.com/loonghao/auroraview/pull/463) merged. Both are now on `main`, and
+This RFC was drafted before [#471](https://github.com/try-auroraview/auroraview/pull/471) and
+[#463](https://github.com/try-auroraview/auroraview/pull/463) merged. Both are now on `main`, and
 they land the contract layer this RFC argued for — under **different names and a different
 registration mechanism**.
 
@@ -80,7 +80,7 @@ seam we need end to end.
 
 ### 1.1 Layer 0 — `auroraview-contract` (new, merged in #471, dependency-free leaf)
 
-[#471](https://github.com/loonghao/auroraview/pull/471) added
+[#471](https://github.com/try-auroraview/auroraview/pull/471) added
 `crates/auroraview-contract` with a deliberately **empty `[dependencies]` section**, making it
 the leaf of the dependency graph. It holds contracts only — no implementation, no host SDK,
 no WebView engine:
@@ -766,9 +766,9 @@ does not close this gap on its own.
 
 | Work | Status | Relationship |
 | --- | --- | --- |
-| [PR #471](https://github.com/loonghao/auroraview/pull/471) — host-adapter and render-backend contracts | **merged 2026-09-22** | **Supersedes this RFC's §1/§2 contract layer and §3's entry-point proposal.** Ships `auroraview-contract` (`RenderBackend`, `RenderSurface`, `BackendRegistry`, `HostAdapter`, `HostRegistry`, `CapabilitySupport`), the Python mirror in `python/auroraview/adapter/`, and the capability-parity CI guard. §2 of this RFC is its deferred follow-up list. Design record: [`docs/design/adapter-contract.md`](../design/adapter-contract.md). |
-| [PR #463](https://github.com/loonghao/auroraview/pull/463) — parent/child IPC bridge and `--parent-hwnd` | **merged 2026-09-22** | Supplies the parent-handle plumbing that `SurfaceSpec::parent_handle` and `HostAdapter::parent_handle()` **will** consume once surface creation is rewired (`--parent-hwnd` / `AURORAVIEW_PARENT_HWND`, plus `AURORAVIEW_PARENT_ID` / `AURORAVIEW_PARENT_PORT` for child mode; see `crates/auroraview-core/src/parent_ipc/`). **Note the type mismatch:** #463 carries the handle as `Option<isize>` (`ChildInfo::parent_hwnd`, `parse_hwnd()`), while the contract's `SurfaceSpec::parent_handle` / `HostAdapter::parent_handle()` are `Option<u64>`, so wiring them needs one explicit, deliberate conversion — see §2.2. Resolves the "PIP-3214 path A groundwork" row from the original draft: the plumbing exists, so §2.2's handle type is the remaining question. |
-| [PR #460](https://github.com/loonghao/auroraview/pull/460) — DCC-MCP WebView adapter | **merged 2026-09-19** | Supplies the canonical Python adapter and the `auroraview-webview` skill. §3.4 keeps `detect_host_dcc()` as the fallback and reuses the skill layout as the template for G6. §4.2 resolves its contract conflict with the Rust `CdpAuroraViewAdapter`. **Merged first, as the original draft required.** |
+| [PR #471](https://github.com/try-auroraview/auroraview/pull/471) — host-adapter and render-backend contracts | **merged 2026-09-22** | **Supersedes this RFC's §1/§2 contract layer and §3's entry-point proposal.** Ships `auroraview-contract` (`RenderBackend`, `RenderSurface`, `BackendRegistry`, `HostAdapter`, `HostRegistry`, `CapabilitySupport`), the Python mirror in `python/auroraview/adapter/`, and the capability-parity CI guard. §2 of this RFC is its deferred follow-up list. Design record: [`docs/design/adapter-contract.md`](../design/adapter-contract.md). |
+| [PR #463](https://github.com/try-auroraview/auroraview/pull/463) — parent/child IPC bridge and `--parent-hwnd` | **merged 2026-09-22** | Supplies the parent-handle plumbing that `SurfaceSpec::parent_handle` and `HostAdapter::parent_handle()` **will** consume once surface creation is rewired (`--parent-hwnd` / `AURORAVIEW_PARENT_HWND`, plus `AURORAVIEW_PARENT_ID` / `AURORAVIEW_PARENT_PORT` for child mode; see `crates/auroraview-core/src/parent_ipc/`). **Note the type mismatch:** #463 carries the handle as `Option<isize>` (`ChildInfo::parent_hwnd`, `parse_hwnd()`), while the contract's `SurfaceSpec::parent_handle` / `HostAdapter::parent_handle()` are `Option<u64>`, so wiring them needs one explicit, deliberate conversion — see §2.2. Resolves the "PIP-3214 path A groundwork" row from the original draft: the plumbing exists, so §2.2's handle type is the remaining question. |
+| [PR #460](https://github.com/try-auroraview/auroraview/pull/460) — DCC-MCP WebView adapter | **merged 2026-09-19** | Supplies the canonical Python adapter and the `auroraview-webview` skill. §3.4 keeps `detect_host_dcc()` as the fallback and reuses the skill layout as the template for G6. §4.2 resolves its contract conflict with the Rust `CdpAuroraViewAdapter`. **Merged first, as the original draft required.** |
 | RFC 0007 | — | Splits WebView/Browser into feature crates. This RFC is orthogonal — 0007 composes *features above* the WebView, this one abstracts *the renderer below* it. |
 | RFC 0011 (unified IPC) | — | `RenderSurface`'s event path is the backend-facing edge of the same IPC contract; it must stay message-compatible. #463's `parent_ipc/` module is the concrete realization for the parent/child case. |
 | RFC 0018 (packed CLI mode) | — | Its `@webview.command(..., cli=True)` metadata is the same metadata G3 wants as JSON Schema. One extension serves both. |

@@ -8,10 +8,14 @@ alwaysApply: true
 
 AuroraView 将部分功能模块拆分为独立的 Git submodules，便于独立维护、版本控制和复用：
 
+> **NOTE**: 主仓库已迁移至 `try-auroraview/auroraview`。下面的 sibling submodule 仓库
+> （pack / protect / signals / extensions）尚未确认迁移，仍指向 `loonghao/`，
+> 迁移前请勿改动。
+
 ```
 submodules/
 ├── auroraview-pack/        # 应用打包系统
-│   └── https://github.com/loonghao/auroraview-pack.git
+│   └── https://github.com/loonghao/auroraview-pack.git  # NOTE: sibling repo not migrated; still under loonghao/
 ├── auroraview-protect/     # Python 代码保护（字节码加密）
 │   └── https://github.com/loonghao/auroraview-protect.git
 ├── auroraview-signals/     # 信号/槽系统（类 Qt Signals）

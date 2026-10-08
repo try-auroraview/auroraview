@@ -15,7 +15,7 @@
 
 ### Phase 1: Python SDK 核心功能
 
-> ⚠️ **此实现计划已被 [Epic #364](https://github.com/loonghao/auroraview/issues/364)
+> ⚠️ **此实现计划已被 [Epic #364](https://github.com/try-auroraview/auroraview/issues/364)
 > supersede**。Python `auroraview-mcp` 包已删除，新实现走 Rust adapter crate +
 > `dcc-mcp-core` gateway，详见 RFC 0001 顶部的说明。以下 checkbox 仅保留历史快照。
 

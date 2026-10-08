@@ -10,7 +10,7 @@
   <a href="https://pypi.org/project/auroraview/"><img src="https://img.shields.io/pypi/v/auroraview.svg" alt="PyPI 版本"></a>
   <a href="https://pypi.org/project/auroraview/"><img src="https://img.shields.io/pypi/pyversions/auroraview.svg" alt="Python 版本"></a>
   <a href="https://pepy.tech/project/auroraview"><img src="https://static.pepy.tech/badge/auroraview" alt="下载量"></a>
-  <a href="https://codecov.io/gh/loonghao/auroraview"><img src="https://codecov.io/gh/loonghao/auroraview/branch/main/graph/badge.svg" alt="Codecov"></a>
+  <a href="https://codecov.io/gh/try-auroraview/auroraview"><img src="https://codecov.io/gh/try-auroraview/auroraview/branch/main/graph/badge.svg" alt="Codecov"></a>
   <a href="https://github.com/try-auroraview/auroraview/actions/workflows/pr-checks.yml"><img src="https://github.com/try-auroraview/auroraview/actions/workflows/pr-checks.yml/badge.svg" alt="PR Checks"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
