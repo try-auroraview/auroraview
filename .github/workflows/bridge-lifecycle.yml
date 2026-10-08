@@ -1,0 +1,55 @@
+name: Bridge Lifecycle
+
+on:
+  pull_request:
+    paths:
+      - 'python/auroraview/integration/bridge.py'
+      - 'python/auroraview/integration/__init__.py'
+      - 'python/auroraview/__init__.py'
+      - 'tests/python/test_bridge_lifecycle_exit.py'
+      - 'tests/python/integration/test_bridge.py'
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - '.github/bridge.just'
+      - '.github/workflows/bridge-lifecycle.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'python/auroraview/integration/bridge.py'
+      - 'python/auroraview/integration/__init__.py'
+      - 'python/auroraview/__init__.py'
+      - 'tests/python/test_bridge_lifecycle_exit.py'
+      - 'tests/python/integration/test_bridge.py'
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - '.github/bridge.just'
+      - '.github/workflows/bridge-lifecycle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bridge-lifecycle-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    name: Bridge Lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up vx helpers
+        uses: loonghao/vx@3bcef20521ac4836e5e56da55c09af90f320c564 # vx-v0.9.33
+        with:
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just uv'
+          cache: 'false'
+      - name: Test listener, client, thread and interpreter-exit cleanup
+        run: vx just --justfile .github/bridge.just test '3.12'
