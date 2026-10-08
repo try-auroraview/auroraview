@@ -1,6 +1,6 @@
 # RFC 0001: AuroraView MCP Server
 
-> **状态**: ⚠️ **Superseded** — 参见 [Epic #364](https://github.com/loonghao/auroraview/issues/364)
+> **状态**: ⚠️ **Superseded** — 参见 [Epic #364](https://github.com/try-auroraview/auroraview/issues/364)
 > **作者**: AuroraView Team
 > **创建日期**: 2024-12-30
 > **更新日期**: 2026-04-17（标记为 superseded）
@@ -12,7 +12,7 @@
 > `auroraview-mcp` 包去实现这些。`dcc-mcp-core` v0.13.2 已经把这些全部做成了
 > 可复用的基础设施，因此 auroraview 改为一个 Rust adapter crate +
 > CDP bridge + SKILL.md 驱动的 tool 清单 —— 见
-> [`crates/auroraview-mcp`](https://github.com/loonghao/auroraview/tree/main/crates/auroraview-mcp)（落地中）
+> [`crates/auroraview-mcp`](https://github.com/try-auroraview/auroraview/tree/main/crates/auroraview-mcp)（落地中）
 > 以及 issues #365–#368。
 >
 > 本文档保留作为历史设计存档；下文中的包名、命令、架构图不再代表当前实现。
@@ -997,7 +997,7 @@ packages/auroraview-mcp-node/
       "command": "uv",
       "args": [
         "--directory",
-        "/path/to/dcc_webview/packages/auroraview-mcp",
+        "/path/to/auroraview/packages/auroraview-mcp",
         "run",
         "auroraview-mcp"
       ]
@@ -1246,7 +1246,7 @@ midscene = [
 - [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)
 - [Midscene.js 文档](https://midscenejs.com/)
 - [AuroraView 项目文档](/guide/getting-started)
-- [AuroraView GitHub](https://github.com/loonghao/auroraview)
+- [AuroraView GitHub](https://github.com/try-auroraview/auroraview)
 
 ## 项目组织策略
 
@@ -1257,7 +1257,7 @@ midscene = [
 #### Phase 1：在当前项目内开发（快速验证）
 
 ```
-dcc_webview/
+auroraview/
 ├── packages/
 │   ├── auroraview-sdk/          # 已有 JS SDK
 │   ├── auroraview-mcp/          # Python MCP Server

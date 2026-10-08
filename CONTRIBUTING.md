@@ -16,8 +16,8 @@ Please be respectful and constructive in all interactions with the community.
 ### Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/dcc_webview.git
-cd dcc_webview
+git clone https://github.com/try-auroraview/auroraview.git
+cd auroraview
 
 # Install tools and hooks from vx.toml
 vx setup

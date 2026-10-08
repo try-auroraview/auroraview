@@ -1,0 +1,119 @@
+name: Offscreen Contracts
+
+on:
+  pull_request:
+    paths:
+      - 'packages/auroraview-offscreen/**'
+      - 'packages/auroraview-sdk/src/inject/event_bridge.ts'
+      - 'packages/auroraview-sdk/package.json'
+      - 'packages/auroraview-sdk/tsup.config.ts'
+      - 'python/auroraview/integration/backend.py'
+      - 'python/auroraview/integration/bridge.py'
+      - 'python/auroraview/integration/__init__.py'
+      - 'python/auroraview/__init__.py'
+      - 'examples/backend_session.py'
+      - 'tests/python/test_backend_session.py'
+      - 'tests/python/test_bridge_lifecycle_exit.py'
+      - 'tests/python/integration/test_bridge.py'
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - '.github/workflows/offscreen.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/auroraview-offscreen/**'
+      - 'packages/auroraview-sdk/src/inject/event_bridge.ts'
+      - 'packages/auroraview-sdk/package.json'
+      - 'packages/auroraview-sdk/tsup.config.ts'
+      - 'python/auroraview/integration/backend.py'
+      - 'python/auroraview/integration/bridge.py'
+      - 'python/auroraview/integration/__init__.py'
+      - 'python/auroraview/__init__.py'
+      - 'examples/backend_session.py'
+      - 'tests/python/test_backend_session.py'
+      - 'tests/python/test_bridge_lifecycle_exit.py'
+      - 'tests/python/integration/test_bridge.py'
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - '.github/workflows/offscreen.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offscreen-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  transport:
+    name: Transport and Wheel (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up vx helpers
+        uses: loonghao/vx@3bcef20521ac4836e5e56da55c09af90f320c564 # vx-v0.9.33
+        with:
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just uv'
+          cache: 'false'
+      - name: Test transport, owned process exit and runtime tools
+        run: vx just --justfile packages/auroraview-offscreen/justfile test-python '${{ matrix.python }}'
+      - name: Build pure Python wheel
+        run: vx just --justfile packages/auroraview-offscreen/justfile wheel '${{ matrix.python }}'
+      - name: Check wheel excludes native runtime
+        run: vx just --justfile packages/auroraview-offscreen/justfile check-wheel '${{ matrix.python }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: offscreen-wheel-${{ matrix.os }}-${{ matrix.python }}
+          path: packages/auroraview-offscreen/dist/*.whl
+          if-no-files-found: error
+
+  helper:
+    name: Helper Unit Contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up vx helpers
+        uses: loonghao/vx@3bcef20521ac4836e5e56da55c09af90f320c564 # vx-v0.9.33
+        with:
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just node@22'
+          cache: 'false'
+      - name: Test framing, input, pixel conversion and bounded backpressure
+        run: vx just --justfile packages/auroraview-offscreen/justfile test-node
+
+  backend-lifecycle:
+    name: Backend and Bridge Lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up vx helpers
+        uses: loonghao/vx@3bcef20521ac4836e5e56da55c09af90f320c564 # vx-v0.9.33
+        with:
+          version: '0.9.33'
+          github-token: ${{ github.token }}
+          tools: 'just uv'
+          cache: 'false'
+      - name: Run explicit backend and listener lifecycle tests
+        run: vx just --justfile packages/auroraview-offscreen/justfile test-backend '3.12'
+      - name: Run public backend example without native Core
+        run: vx just --justfile packages/auroraview-offscreen/justfile example-backend '3.12'

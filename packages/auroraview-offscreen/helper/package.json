@@ -1,0 +1,5 @@
+{
+  "name": "@auroraview/offscreen-helper",
+  "private": true,
+  "main": "main.cjs"
+}
