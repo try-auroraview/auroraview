@@ -45,6 +45,25 @@ cookies and local storage. Graceful exit removes only the broker's owned profile
 The host must continue polling during shutdown; the transport enforces bounded
 termination through its owned process tree when graceful exit cannot complete.
 
+Each ordinary `poll()` cleanup attempt and default `terminate()` uses one 250 ms
+deadline for inventory, parent exit and descendant exit. If the OS has not
+finished, `closed` stays false, new commands are rejected and the host retains
+the renderer for the next timer tick. Linux checks the isolated process group
+and session plus each member's PID/start time; recycled PIDs cannot satisfy
+ownership. Exited zombies hold no transport endpoints and their new parent owns
+the final `waitpid`.
+
+Only final teardown may explicitly use `terminate(timeout=3)`; the accepted
+timeout range is `(0, 3]` seconds. It does not change the ordinary timer budget.
+Failed construction also attempts this bounded final cleanup. If cleanup cannot
+complete, the public `auroraview_offscreen.RendererCleanupError` preserves the
+original startup failure as `__cause__`, the cleanup error as `.error`, and the
+still-owned renderer as `.renderer`. The caller must retain that renderer in its
+existing closing-owner collection and continue `poll()` retries, or explicitly
+retry `terminate(timeout=...)`. Its tree, pipes and log remain owned until actual
+completion; discarding the exception does not establish successful cleanup. No
+background reaper or additional host timer is created.
+
 The [Blender adapter](https://github.com/try-auroraview/auroraview-blender) owns
 the native dock surface and GPU upload. The optional Core
 [`BackendSession`](../../python/auroraview/integration/backend.py) borrows an

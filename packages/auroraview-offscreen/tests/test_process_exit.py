@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -14,8 +15,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
-from auroraview_offscreen import RendererProcess  # noqa: E402
+from auroraview_offscreen import RendererCleanupError, RendererProcess  # noqa: E402
 from auroraview_offscreen._job import ProcessTree  # noqa: E402
+from auroraview_offscreen._posix import ProcessGroup  # noqa: E402
 
 CHILD = r"""
 import json,os,struct,subprocess,sys,time
@@ -55,6 +57,25 @@ for line in sys.stdin.buffer:
 
 
 class ProcessTreeTests(unittest.TestCase):
+    def test_parent_and_descendants_share_one_deadline(self):
+        tree = object.__new__(ProcessTree)
+        tree.process, tree._handle, tree._group = Mock(), None, Mock()
+        with patch("auroraview_offscreen._job.time.perf_counter", side_effect=[100, 100.1]):
+            tree.close(force=True, timeout=0.25)
+        tree._group.terminate.assert_called_once_with(100.25)
+        tree.process.wait.assert_called_once()
+        self.assertAlmostEqual(tree.process.wait.call_args.kwargs["timeout"], 0.15)
+        tree._group.wait.assert_called_once_with(100.25)
+
+    def test_teardown_budget_rejects_invalid_values_without_signaling(self):
+        tree = object.__new__(ProcessTree)
+        tree.process, tree._handle, tree._group = Mock(), None, Mock()
+        for timeout in (0, -1, 3.01, float("inf"), float("nan")):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                tree.close(force=True, timeout=timeout)
+        tree._group.terminate.assert_not_called()
+        tree.process.wait.assert_not_called()
+
     def test_timeout_is_explicit_and_retains_retryable_ownership(self):
         process = Mock()
         process.wait.side_effect = subprocess.TimeoutExpired("owned-child", 0.25)
@@ -74,6 +95,34 @@ class ProcessTreeTests(unittest.TestCase):
     os.name == "nt" and sys.version_info < (3, 12), "Windows pipes require Python3.12+"
 )
 class ProcessExitTests(unittest.TestCase):
+    def test_failed_startup_timeout_returns_retryable_owner_and_open_endpoints(self):
+        with tempfile.TemporaryDirectory(prefix="auroraview-offscreen-startup-") as temporary:
+            root = Path(temporary)
+            (root / "main.cjs").write_text("# sentinel", encoding="utf-8")
+            (root / "stdio.cjs").write_text(CHILD, encoding="utf-8")
+            (root / "mode").write_text("pipe_hang", encoding="utf-8")
+            with (
+                patch("auroraview_offscreen.process.os.set_blocking", side_effect=OSError("setup")),
+                patch.object(
+                    ProcessTree, "close", side_effect=TimeoutError("still exiting")
+                ) as close,
+            ):
+                with self.assertRaises(RendererCleanupError) as caught:
+                    RendererProcess(sys.executable, root, log_path=root / "renderer.log")
+            client = caught.exception.renderer
+            self.addCleanup(client.terminate, timeout=3)
+            close.assert_called_once_with(force=True, timeout=3)
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertFalse(client.closed)
+            self.assertTrue(client._cleanup_pending)
+            self.assertFalse(client._process.stdin.closed)
+            self.assertFalse(client._process.stdout.closed)
+            self.assertFalse(client._log.closed)
+            self.assertIsNone(client._process.poll())
+            client.terminate(timeout=3)
+            self.assert_reaped(client)
+            self.assertTrue(client._log.closed)
+
     def make_client(self, mode: str):
         temporary = tempfile.TemporaryDirectory(prefix="auroraview-offscreen-exit-")
         self.addCleanup(temporary.cleanup)
@@ -137,6 +186,11 @@ class ProcessExitTests(unittest.TestCase):
 
     def descendant_handle(self, pid, tree):
         if os.name != "nt":
+            if sys.platform.startswith("linux"):
+                identity = ProcessGroup._stat(pid)
+                self.assertIsNotNone(identity)
+                self.assertEqual(identity[1:3], (tree.process.pid, tree.process.pid))
+                return identity[3]
             return None
         from ctypes import wintypes
 
@@ -174,9 +228,11 @@ class ProcessExitTests(unittest.TestCase):
             self.assertEqual(
                 kernel.WaitForSingleObject(process_handle, 0), 0, f"Descendant {pid} remains alive"
             )
-        elif Path(f"/proc/{pid}/stat").exists():
-            # Reparented zombies have exited; the OS init process owns their reaping.
-            self.assertEqual(Path(f"/proc/{pid}/stat").read_text().split()[2], "Z")
+        elif sys.platform.startswith("linux"):
+            identity = ProcessGroup._stat(pid)
+            if identity is not None and identity[3] == handle:
+                # Reparented zombies have exited; init owns their final waitpid.
+                self.assertIn(identity[0], {"Z", "X"}, f"Descendant {pid} remains alive")
         else:
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
@@ -189,10 +245,53 @@ class ProcessExitTests(unittest.TestCase):
         )
         descendant = next(item["detail"] for item in messages if item.get("event") == "spawned")
         handle = self.descendant_handle(descendant, client._tree)
-        started = time.monotonic()
-        client.shutdown()
-        self.until(client, lambda _: client.closed)
-        self.assertLess(time.monotonic() - started, 2.5)
+        self.assertTrue(client.ready)  # Startup is excluded from the shutdown clock.
+        polls, closes = [], []
+        original_poll, original_close = client.poll, client._tree.close
+        started = time.perf_counter()
+
+        def poll():
+            before = time.perf_counter()
+            try:
+                return original_poll()
+            finally:
+                polls.append((before, time.perf_counter()))
+
+        def close(*, force, timeout):
+            before, code = time.perf_counter(), client._process.returncode
+            try:
+                return original_close(force=force, timeout=timeout)
+            finally:
+                closes.append(
+                    {
+                        "at_ms": (before - started) * 1000,
+                        "elapsed_ms": (time.perf_counter() - before) * 1000,
+                        "budget_ms": timeout * 1000,
+                        "parent_before": code,
+                        "parent_after": client._process.returncode,
+                    }
+                )
+
+        with (
+            patch.object(client, "poll", side_effect=poll),
+            patch.object(client._tree, "close", side_effect=close),
+        ):
+            client.shutdown()
+            self.until(client, lambda _: client.closed)
+        elapsed = time.perf_counter() - started
+        phases = {
+            "wall_ms": elapsed * 1000,
+            "polls": len(polls),
+            "max_poll_ms": max(end - begin for begin, end in polls) * 1000,
+            "max_timer_gap_ms": max(
+                (current[0] - previous[1] for previous, current in zip(polls, polls[1:])),
+                default=0,
+            )
+            * 1000,
+            "closes": closes,
+        }
+        print("Owned shutdown phases: " + json.dumps(phases))
+        self.assertLess(elapsed, 2.5, json.dumps(phases))
         self.assertEqual(client._process.returncode, 0)
         self.assert_reaped(client)
         self.assert_descendant_exited(descendant, handle)
@@ -201,6 +300,20 @@ class ProcessExitTests(unittest.TestCase):
         client, _ = self.make_client("protocol_failure")
         self.until(client, lambda items: any(item["type"] == "error" for item in items))
         self.assert_reaped(client)
+
+    def test_parent_crash_reaps_inherited_pipe_child_before_closed(self):
+        client, _ = self.make_client("normal")
+        client.create("owned", 1, 2, 1, html="test")
+        messages = self.until(
+            client, lambda items: any(item.get("event") == "spawned" for item in items)
+        )
+        descendant = next(item["detail"] for item in messages if item.get("event") == "spawned")
+        handle = self.descendant_handle(descendant, client._tree)
+        client._process.kill()
+        messages = self.until(client, lambda _: client.closed)
+        self.assertTrue(any(item.get("code") == "renderer_disconnected" for item in messages))
+        self.assert_reaped(client)
+        self.assert_descendant_exited(descendant, handle)
 
     def test_cancel_repeated_launches_reaps_and_closes_pipes(self):
         for attempt in range(4):
@@ -212,6 +325,14 @@ class ProcessExitTests(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 0.35)
                 self.assert_reaped(client)
                 client.terminate()
+
+    def test_explicit_final_teardown_passes_bounded_timeout_to_owner(self):
+        client, _ = self.make_client("pipe_hang")
+        self.until(client, lambda _: client.ready)
+        with patch.object(client._tree, "close", wraps=client._tree.close) as close:
+            client.terminate(timeout=3)
+        close.assert_called_once_with(force=True, timeout=3)
+        self.assert_reaped(client)
 
     def test_full_outbound_pipe_cannot_block_cancel(self):
         client, _ = self.make_client("pipe_hang")
@@ -242,12 +363,12 @@ class ProcessExitTests(unittest.TestCase):
         original_close = client._tree.close
         attempts = 0
 
-        def delayed_close(*, force):
+        def delayed_close(*, force, timeout):
             nonlocal attempts
             attempts += 1
             if attempts == 1:
                 raise TimeoutError("Owned test process is still exiting")
-            original_close(force=force)
+            original_close(force=force, timeout=timeout)
 
         with patch.object(client._tree, "close", side_effect=delayed_close):
             client.shutdown()
@@ -266,12 +387,12 @@ class ProcessExitTests(unittest.TestCase):
         original_close = client._tree.close
         attempts = 0
 
-        def delayed_close(*, force):
+        def delayed_close(*, force, timeout):
             nonlocal attempts
             attempts += 1
             if attempts == 1:
-                raise TimeoutError("Owned test process is still exiting")
-            original_close(force=force)
+                raise OSError("Owned test process query temporarily failed")
+            original_close(force=force, timeout=timeout)
 
         with patch.object(client._tree, "close", side_effect=delayed_close):
             messages = self.until(

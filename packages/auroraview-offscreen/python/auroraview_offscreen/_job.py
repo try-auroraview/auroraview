@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import ctypes
 import os
-import signal
 import subprocess
 import time
+
+from ._posix import ProcessGroup
 
 EXIT_TIMEOUT = 0.25
 
@@ -17,7 +18,9 @@ class ProcessTree:
         self._handle = None
         self._pending_handles = []
         self._pending_ids = set()
+        self._group = None
         if os.name != "nt":
+            self._group = ProcessGroup(process.pid)
             return
         from ctypes import wintypes
 
@@ -116,12 +119,14 @@ class ProcessTree:
             raise
         self._kernel, self._handle, self._accounting_type = kernel, handle, Accounting
 
-    def _capture_handles(self) -> None:
+    def _capture_handles(self, deadline: float) -> None:
         """Retain waitable handles for this Job's members, without global PID scans."""
         from ctypes import wintypes
 
         capacity = 16
         while capacity <= 4096:
+            if time.perf_counter() >= deadline:
+                raise TimeoutError("Owned renderer Job inventory exceeded its budget")
             buffer = ctypes.create_string_buffer(8 + ctypes.sizeof(ctypes.c_size_t) * capacity)
             if self._kernel.QueryInformationJobObject(
                 self._handle,
@@ -133,6 +138,8 @@ class ProcessTree:
                 count = wintypes.DWORD.from_buffer(buffer, 4).value
                 ids = (ctypes.c_size_t * count).from_buffer(buffer, 8)
                 for pid in ids:
+                    if time.perf_counter() >= deadline:
+                        raise TimeoutError("Owned renderer Job inventory exceeded its budget")
                     if pid in self._pending_ids:
                         continue
                     # Job membership may change between the snapshot and OpenProcess.
@@ -156,30 +163,33 @@ class ProcessTree:
             capacity *= 2
         raise RuntimeError("Owned renderer Job exceeds the process inventory limit")
 
-    def close(self, *, force: bool = False) -> None:
-        """Stop and reap the owned tree within 250 ms, retaining ownership on timeout.
+    def close(self, *, force: bool = False, timeout: float = EXIT_TIMEOUT) -> None:
+        """Stop and reap the owned tree within one bounded, retryable deadline.
 
         Closing a kill-on-close Job is asynchronous. Terminate it explicitly and
         keep its handle until both Popen and the Job's descendants have exited.
         Only explicit teardown waits; transport polling never calls this until
         shutdown, failure or cancellation.
         """
-        deadline = time.monotonic() + EXIT_TIMEOUT
+        if not 0 < timeout <= 3:
+            raise ValueError("Renderer teardown timeout must be within (0, 3] seconds")
+        deadline = time.perf_counter() + timeout
         if self._handle is not None:
-            self._capture_handles()
+            self._capture_handles(deadline)
             if not self._kernel.TerminateJobObject(self._handle, 1):
                 raise ctypes.WinError(ctypes.get_last_error())
-        elif force and os.name != "nt":
-            try:
-                os.killpg(self.process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        elif force and getattr(self, "_group", None) is not None:
+            self._group.terminate(deadline)
         elif force and self.process.poll() is None:
             self.process.kill()
         try:
-            self.process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            self.process.wait(timeout=max(0.0, deadline - time.perf_counter()))
         except subprocess.TimeoutExpired as exc:
-            raise TimeoutError("Owned renderer process did not exit within 250 ms") from exc
+            raise TimeoutError(
+                f"Owned renderer process did not exit within {timeout * 1000:g} ms"
+            ) from exc
+        if getattr(self, "_group", None) is not None:
+            self._group.wait(deadline)
         if self._handle is not None:
             accounting = self._accounting_type()
             while True:
@@ -193,17 +203,21 @@ class ProcessTree:
                     raise ctypes.WinError(ctypes.get_last_error())
                 if accounting.ActiveProcesses == 0:
                     break
-                remaining = deadline - time.monotonic()
+                remaining = deadline - time.perf_counter()
                 if remaining <= 0:
-                    raise TimeoutError("Owned renderer descendants did not exit within 250 ms")
+                    raise TimeoutError(
+                        f"Owned renderer descendants did not exit within {timeout * 1000:g} ms"
+                    )
                 time.sleep(min(0.001, remaining))
             # Accounting can reach zero before a terminating process handle signals.
             # Wait those exact owned handles before claiming the tree has exited.
             for handle in self._pending_handles:
-                milliseconds = max(0, int((deadline - time.monotonic()) * 1000))
+                milliseconds = max(0, int((deadline - time.perf_counter()) * 1000))
                 result = self._kernel.WaitForSingleObject(handle, milliseconds)
                 if result == 258:
-                    raise TimeoutError("Owned renderer descendants did not exit within 250 ms")
+                    raise TimeoutError(
+                        f"Owned renderer descendants did not exit within {timeout * 1000:g} ms"
+                    )
                 if result != 0:
                     raise ctypes.WinError(ctypes.get_last_error())
             for handle in self._pending_handles:

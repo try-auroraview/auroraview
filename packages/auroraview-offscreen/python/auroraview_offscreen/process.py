@@ -18,6 +18,17 @@ from ._pipes import OutputPipe
 from .protocol import MAX_SURFACES, FrameDecoder, ProtocolError, encode_command
 
 
+class RendererCleanupError(RuntimeError):
+    """Failed startup retains its owner for an explicit bounded cleanup retry."""
+
+    def __init__(self, renderer: RendererProcess, error: Exception):
+        self.renderer = renderer
+        self.error = error
+        super().__init__(
+            f"Renderer startup cleanup is pending; retry exception.renderer.terminate(): {error}"
+        )
+
+
 def resolve_bundle(path: str | Path) -> tuple[Path, Path]:
     """Validate a maintainer-built bundle's launch paths and critical files.
 
@@ -64,8 +75,9 @@ def resolve_bundle(path: str | Path) -> tuple[Path, Path]:
 class RendererProcess:
     """One private renderer, with bounded messages and generation-scoped surfaces.
 
-    No background Python thread, host API call, listener, nested event loop or
-    blocking wait is introduced. Call poll() from the host's existing timer.
+    No background Python thread, host API call, listener or nested event loop is
+    introduced. Transport I/O is nonblocking; explicit teardown waits within its
+    bounded deadline. Call poll() from the host's existing timer.
     """
 
     def __init__(
@@ -86,6 +98,19 @@ class RendererProcess:
         ):
             raise ValueError("Select a complete AuroraView renderer bundle")
         self._log = open(log_path, "ab", buffering=0) if log_path else None
+        # Establish a retryable owner before spawning, including failed startup.
+        self._decoder = FrameDecoder()
+        self._outgoing: deque[bytes] = deque()
+        self._queued_bytes = 0
+        self._surfaces: dict[str, int] = {}
+        self._sequences: dict[str, int] = {}
+        self._started = time.monotonic()
+        self._startup_timeout = startup_timeout
+        self._shutdown_at: float | None = None
+        self.ready = False
+        self.closed = False
+        self._cleanup_pending = False
+        self.last_error: str | None = None
         env = dict(os.environ)
         env["ELECTRON_RUN_AS_NODE"] = "1"
         env["ELECTRON_NO_ATTACH_CONSOLE"] = "1"
@@ -111,35 +136,20 @@ class RendererProcess:
             self._tree = ProcessTree(self._process)
             os.set_blocking(self._process.stdin.fileno(), False)
             os.set_blocking(self._process.stdout.fileno(), False)
-        except BaseException:
+        except BaseException as startup_error:
             try:
-                if hasattr(self, "_tree"):
-                    self._tree.close(force=True)
-                elif hasattr(self, "_process"):
-                    self._process.kill()
-                    self._process.wait(timeout=0.25)
-            finally:
-                if hasattr(self, "_process"):
-                    self._process.stdin.close()
-                    self._process.stdout.close()
-                if self._log:
-                    self._log.close()
+                # No timer will receive this incomplete instance. Give final
+                # teardown its explicit budget, then return ownership on failure.
+                self.terminate(timeout=3)
+            except (TimeoutError, OSError) as cleanup_error:
+                raise RendererCleanupError(self, cleanup_error) from startup_error
             raise
         finally:
             if output_pipe:
                 output_pipe.close()
-        self._decoder = FrameDecoder()
-        self._outgoing: deque[bytes] = deque()
-        self._queued_bytes = 0
-        self._surfaces: dict[str, int] = {}
-        self._sequences: dict[str, int] = {}
+        # The handshake budget starts only when its private start command can
+        # be queued; Popen and ownership setup may be slow on a loaded host.
         self._started = time.monotonic()
-        self._startup_timeout = startup_timeout
-        self._shutdown_at: float | None = None
-        self.ready = False
-        self.closed = False
-        self._cleanup_pending = False
-        self.last_error: str | None = None
         # The broker cannot create Chromium descendants until the owner has
         # assigned its process tree and established the nonblocking transport.
         self._send({"type": "start"})
@@ -261,7 +271,7 @@ class RendererProcess:
         """Attempt teardown once per tick, preserving ownership while the OS exits."""
         try:
             self.terminate()
-        except TimeoutError as exc:
+        except (TimeoutError, OSError) as exc:
             return [{"type": "error", "code": "cleanup_pending", "message": str(exc)}]
         return []
 
@@ -322,24 +332,47 @@ class RendererProcess:
         self._shutdown_at = time.monotonic() + 2
         self._surfaces.clear()
 
-    def terminate(self) -> None:
-        """Close only our process tree, with a 250ms maximum OS reap budget."""
+    def terminate(self, *, timeout: float = 0.25) -> None:
+        """Close our tree; final host exit may explicitly allow up to three seconds.
+
+        Timer polling always uses the default 250ms budget. Ownership remains
+        retryable if the single parent-and-descendants deadline is exceeded.
+        """
         if self.closed:
             return
+        if not 0 < timeout <= 3:
+            raise ValueError("Renderer teardown timeout must be within (0, 3] seconds")
         try:
-            self._tree.close(force=True)
-        except TimeoutError:
+            if hasattr(self, "_tree"):
+                self._tree.close(force=True, timeout=timeout)
+            elif hasattr(self, "_process"):
+                # Job/group setup failed before the private start command, so
+                # this child cannot have created renderer descendants yet.
+                deadline = time.perf_counter() + timeout
+                if self._process.poll() is None:
+                    self._process.kill()
+                try:
+                    self._process.wait(timeout=max(0.0, deadline - time.perf_counter()))
+                except subprocess.TimeoutExpired as exc:
+                    raise TimeoutError("Owned renderer startup process is still exiting") from exc
+        except (TimeoutError, OSError):
             self._cleanup_pending = True
             raise
-        self._cleanup_pending = False
-        self.closed = True
-        self._process.stdin.close()
-        self._process.stdout.close()
-        if self._log:
-            self._log.close()
+        try:
+            if hasattr(self, "_process"):
+                for stream in (self._process.stdin, self._process.stdout):
+                    if stream is not None:
+                        stream.close()
+            if self._log:
+                self._log.close()
+        except OSError:
+            self._cleanup_pending = True
+            raise
         self._outgoing.clear()
         self._queued_bytes = 0
         self._surfaces.clear()
+        self._cleanup_pending = False
+        self.closed = True
 
     def __del__(self):
         if hasattr(self, "closed"):
