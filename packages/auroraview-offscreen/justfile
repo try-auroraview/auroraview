@@ -1,0 +1,52 @@
+# Independent optional renderer maintenance; invoke through vx just.
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
+set shell := ["sh", "-c"]
+
+default:
+    @vx just --list --justfile justfile
+
+# Standard-library transport, owned process-tree exit and packaging contracts.
+test-python python="3.12":
+    vx uv run --no-project --python {{python}} python -m unittest discover -s tests -v
+    vx uv run --no-project --python {{python}} python -m unittest discover -s tools -p 'test_*.py' -v
+
+# No Electron download, desktop or native application required.
+test-node:
+    vx node@22 --test helper/tests/protocol.test.cjs
+
+test python="3.12": (test-python python) test-node
+
+# Explicit root paths prevent the repository's default testpaths omitting these tests.
+[working-directory: "../.."]
+test-backend python="3.12":
+    vx uv run --no-project --python {{python}} --with pytest --with pytest-timeout --with pytest-asyncio --with websockets python -m pytest tests/python/test_backend_session.py tests/python/test_bridge_lifecycle_exit.py tests/python/integration/test_bridge.py -q -o addopts=''
+
+[working-directory: "../.."]
+example-backend python="3.12":
+    vx uv run --no-project --python {{python}} python -c "import runpy, sys; sys.path.insert(0, 'python'); runpy.run_path('examples/backend_session.py', run_name='__main__')"
+
+wheel python="3.12":
+    vx uv run --no-project --python {{python}} --with build python -m build --wheel --outdir dist .
+
+check-wheel python="3.12":
+    vx uv run --no-project --python {{python}} python -c "from pathlib import Path; import zipfile; wheel=next(Path('dist').glob('*.whl')); archive=zipfile.ZipFile(wheel); metadata=archive.read(next(name for name in archive.namelist() if name.endswith('.dist-info/WHEEL'))); assert b'Root-Is-Purelib: true' in metadata and b'Tag: py3-none-any' in metadata; assert not any(name.startswith(('electron/','helper/')) for name in archive.namelist()); print(wheel.name)"
+
+[working-directory: "../auroraview-sdk"]
+sdk-build:
+    vx bun install
+    vx bun run build
+
+# Maintainer-only publisher acquisition; never part of lightweight CI.
+runtime-acquire output python="3.12":
+    vx uv run --no-project --python {{python}} python tools/acquire_runtime.py --output "{{output}}"
+
+runtime-build acquired output python="3.12":
+    vx uv run --no-project --python {{python}} python tools/build_runtime.py --acquired "{{acquired}}" --helper helper --bridge ../auroraview-sdk/dist/inject/event_bridge.js --output "{{output}}"
+
+runtime-verify archive python="3.12":
+    vx uv run --no-project --python {{python}} python tools/build_runtime.py --verify "{{archive}}"
+
+# Uses an already acquired verified runtime. It does not operate Blender UI.
+[windows]
+native executable:
+    $env:AURORAVIEW_ELECTRON = "{{executable}}"; vx node@22 --test helper/tests/native-smoke.cjs

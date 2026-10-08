@@ -7,6 +7,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./inject/event-bridge": "./dist/inject/event_bridge.js",
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
