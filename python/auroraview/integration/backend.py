@@ -240,6 +240,8 @@ class BackendSession:
         try:
             remove = self._subscribe(event, connection._deliver)
             if not callable(remove) or inspect.iscoroutinefunction(remove):
+                if inspect.iscoroutine(remove):
+                    remove.close()
                 raise TypeError("subscribe must return a synchronous dispose callable")
         except BaseException:
             connection._subscribing = False

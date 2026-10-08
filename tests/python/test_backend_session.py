@@ -3,6 +3,7 @@
 import ast
 import asyncio
 import importlib.util
+import inspect
 import sys
 import threading
 from concurrent.futures import Future
@@ -392,6 +393,27 @@ def test_invalid_public_callables_and_async_lifecycle_are_rejected():
 
     with pytest.raises(TypeError, match="synchronous"):
         BackendSession.own(invoke_tool=Mock(), list_tools=lambda: [], stop=async_stop)
+
+
+def test_coroutine_returned_by_sync_subscribe_is_closed_and_notification_invalidated():
+    async def register():
+        raise AssertionError("Registration must not be scheduled")
+
+    registration = register()
+    captured = []
+    handler = Mock()
+
+    def subscribe(_event, callback):
+        captured.append(callback)
+        return registration
+
+    session = BackendSession.borrow(invoke_tool=Mock(), list_tools=lambda: [], subscribe=subscribe)
+    with pytest.raises(TypeError, match="dispose callable"):
+        session.on("scene.changed", handler)
+    assert inspect.getcoroutinestate(registration) == inspect.CORO_CLOSED
+    assert captured[0]("late") is None
+    handler.assert_not_called()
+    assert session.close()
 
 
 def test_async_cleanup_returned_by_sync_callable_is_rejected_and_retained_for_retry():
