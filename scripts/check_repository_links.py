@@ -5,6 +5,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Iterator, List
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 REPOSITORY = "try-auroraview/auroraview"
@@ -86,6 +87,20 @@ def toml_string(path: str, section: str, key: str) -> str:
 
 def check() -> List[str]:
     errors = []  # type: List[str]
+    for filename in ("README.md", "README_zh.md"):
+        document = ROOT / filename
+        content = document.read_text(encoding="utf-8")
+        # Code examples may contain intentionally illustrative resource paths.
+        content = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", content)
+        links = re.findall(r"\]\(([^\s)]+)\)", content)
+        links += re.findall(r'(?:href|src)="([^"]+)"', content)
+        for link in links:
+            parsed = urlsplit(link)
+            if parsed.scheme or parsed.netloc or not parsed.path:
+                continue
+            target = document.parent / unquote(parsed.path)
+            if not target.exists():
+                errors.append("{} links to missing file {}".format(filename, parsed.path))
     sdk = json.loads((ROOT / "packages/auroraview-sdk/package.json").read_text(encoding="utf-8"))
     metadata = (
         ("Python package name", toml_string("pyproject.toml", "project", "name"), "auroraview"),

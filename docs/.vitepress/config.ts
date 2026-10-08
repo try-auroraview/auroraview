@@ -22,6 +22,7 @@ export default defineConfig({
       themeConfig: {
         nav: [
           { text: '首页', link: '/zh/' },
+          { text: '官网与示例', link: 'https://try-auroraview.github.io/zh/' },
           { text: '指南', link: '/zh/guide/getting-started' },
           { text: 'API', link: '/zh/api/' },
           { text: 'DCC 集成', link: '/zh/dcc/' },
@@ -121,6 +122,7 @@ export default defineConfig({
     
     nav: [
       { text: 'Home', link: '/' },
+      { text: 'Website & Examples', link: 'https://try-auroraview.github.io/' },
       { text: 'Guide', link: '/guide/getting-started' },
       { text: 'API', link: '/api/' },
       { text: 'DCC Integration', link: '/dcc/' },
