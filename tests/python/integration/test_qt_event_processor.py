@@ -76,13 +76,19 @@ class TestQtEventProcessor(unittest.TestCase):
         # Replace the native Rust core with a mock so we can observe the
         # default-path call. The real `_core` is a builtins.WebView whose
         # attributes can't be reassigned, so swap the whole object.
-        webview._core = MagicMock()
+        original_core = webview._core
+        try:
+            webview._core = MagicMock()
+            webview._track_core_thread(webview._core)
 
-        # Emit event (should use default implementation via _auto_process_events)
-        webview.emit("test_event", {"data": 123})
+            # Emit event (should use default implementation via _auto_process_events)
+            webview.emit("test_event", {"data": 123})
 
-        # Verify default implementation was called
-        webview._core.process_events.assert_called_once()
+            # Verify default implementation was called
+            webview._core.process_events.assert_called_once()
+        finally:
+            webview._core = original_core
+            webview.close()
 
     def test_processor_can_be_changed(self):
         """Test that event processor can be changed."""
