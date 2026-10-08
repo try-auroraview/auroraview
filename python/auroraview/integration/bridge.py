@@ -21,10 +21,11 @@ Example:
 """
 
 import asyncio
+import atexit
 import json
 import logging
 import threading
-import time
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Set
 
 try:
@@ -144,6 +145,15 @@ class Bridge:
         self._is_running = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
+        self._state_lock = threading.RLock()
+        self._starting = False
+        self._stop_event: Optional[asyncio.Event] = None
+        self._client_tasks: Set[asyncio.Task] = set()
+        self._startup_event = threading.Event()
+        self._startup_error: Optional[BaseException] = None
+        self._background_done: Optional[Future] = None
+        self._exit_hook = self.stop_background
+        self._atexit_registered = False
 
         logger.info(f"Bridge initialized: {self.host}:{self.port} (protocol={self.protocol})")
 
@@ -203,94 +213,193 @@ class Bridge:
         for non-blocking operation.
 
         Example:
-            >>> await bridge.start()  # Blocks forever
+            >>> await bridge.start()  # Returns after stop() or cancellation
         """
-        logger.info(f"🚀 Starting Bridge on {self.host}:{self.port}")
-
-        # Start service discovery if enabled
-        if self._service_discovery:
+        with self._state_lock:
+            if self._server_task is not None:
+                raise RuntimeError("Bridge is already starting or running")
+            if self._starting and self._thread is not threading.current_thread():
+                raise RuntimeError("Bridge is already starting")
+            self._starting = True
+            self._loop = asyncio.get_running_loop()
+            self._server_task = asyncio.current_task()
+            self._stop_event = asyncio.Event()
+            self._startup_error = None
+        logger.info("Starting Bridge on %s:%s", self.host, self.port)
+        try:
+            self._server = await websockets.serve(
+                self._handle_client, self.host, self.port, close_timeout=1
+            )
+            if self.port == 0:
+                self.port = self._server.sockets[0].getsockname()[1]
+            if self._service_discovery:
+                try:
+                    self._service_discovery.start(
+                        {
+                            "service": "AuroraView Bridge",
+                            "version": "1.0.0",
+                            "protocol": self.protocol,
+                        }
+                    )
+                except Exception as exc:
+                    logger.error("Failed to start service discovery: %s", exc)
+            self._is_running = True
+            self._starting = False
+            self._startup_event.set()
+            logger.info("WebSocket server listening on ws://%s:%s", self.host, self.port)
+            await self._stop_event.wait()
+        except BaseException as exc:
+            self._startup_error = exc
+            raise
+        finally:
+            self._is_running = False
             try:
-                # Prepare metadata for service discovery
-                metadata = {
-                    "service": "AuroraView Bridge",
-                    "version": "1.0.0",
-                    "protocol": self.protocol,
-                }
-                self._service_discovery.start(metadata)
-                logger.info("Service discovery started")
-            except Exception as e:
-                logger.error(f"Failed to start service discovery: {e}")
-
-        self._is_running = True
-        self._loop = asyncio.get_event_loop()
-
-        async with websockets.serve(self._handle_client, self.host, self.port):
-            logger.info(f"WebSocket server listening on ws://{self.host}:{self.port}")
-            logger.info("📡 Waiting for clients to connect...")
-            await asyncio.Future()  # Run forever
+                if self._server is not None:
+                    self._server.close()
+                tasks = tuple(self._client_tasks)
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if self._server is not None:
+                    await self._server.wait_closed()
+            finally:
+                if self._service_discovery:
+                    try:
+                        self._service_discovery.stop()
+                    except Exception as exc:
+                        logger.error("Failed to stop service discovery: %s", exc)
+                self._server = None
+                self._server_task = None
+                self._stop_event = None
+                self._starting = False
+                self._startup_event.set()
 
     def start_background(self):
         """Start the WebSocket server in a background thread (non-blocking).
 
         This is the recommended way to start the Bridge when using with WebView.
-        The server runs in a daemon thread and stops when the main program exits.
+        stop() joins the owned daemon thread. An exit hook also closes it when
+        an application exits without an explicit stop().
 
         Example:
             >>> bridge = Bridge(port=9001)
             >>> bridge.start_background()  # Returns immediately
             >>> # Server is now running in background
         """
-        if self._is_running:
-            logger.warning("Bridge is already running")
-            return
-
-        logger.info("Starting Bridge in background thread...")
 
         def _run_server():
-            """Run the server in background thread."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
             try:
-                # Create new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                self._loop = loop
-
-                logger.info("Background thread: Starting WebSocket server")
                 loop.run_until_complete(self.start())
-            except Exception as e:
-                logger.error(f"Error in Bridge background thread: {e}", exc_info=True)
+            except BaseException as exc:
+                self._startup_error = exc
             finally:
-                logger.info("Background thread: Bridge stopped")
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.close()
+                asyncio.set_event_loop(None)
+                self._unregister_exit_hook()
+                self._startup_event.set()
+                self._background_done.set_result(None)
 
-        self._thread = threading.Thread(target=_run_server, daemon=True)
-        self._thread.start()
-        logger.info("Bridge background thread started")
+        with self._state_lock:
+            if self._is_running or self._starting:
+                return
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError("Bridge background thread is still stopping")
+            self._starting = True
+            self._startup_event.clear()
+            self._startup_error = None
+            self._background_done = Future()
+            self._thread = threading.Thread(
+                target=_run_server, name="AuroraViewBridge", daemon=True
+            )
+            atexit.register(self._exit_hook)
+            self._atexit_registered = True
+            try:
+                self._thread.start()
+            except BaseException:
+                self._starting = False
+                self._unregister_exit_hook()
+                raise
+        if not self._startup_event.wait(3):
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._request_stop)
+            raise TimeoutError("Bridge did not start within three seconds")
+        if self._startup_error is not None:
+            self._thread.join(3)
+            raise self._startup_error
 
-        # Wait a bit for the server to start
-        time.sleep(0.5)  # Give the thread time to start
-        logger.info(f"Bridge status after start: {self}")
+    def _unregister_exit_hook(self):
+        with self._state_lock:
+            if self._atexit_registered:
+                atexit.unregister(self._exit_hook)
+                self._atexit_registered = False
+
+    def stop_background(self, timeout: float = 3.0):
+        """Synchronously close an owned background server with a bounded join."""
+        if not 0 < timeout <= 5:
+            raise ValueError("Bridge stop timeout must be within (0, 5] seconds")
+        thread = self._thread
+        if thread is None or not thread.is_alive():
+            self._unregister_exit_hook()
+            return
+        if thread is threading.current_thread():
+            raise RuntimeError("Use await stop() from the Bridge event loop")
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._request_stop)
+        thread.join(timeout)
+        if thread.is_alive():
+            raise TimeoutError("Bridge background thread did not exit")
+        self._unregister_exit_hook()
+
+    def _request_stop(self):
+        """Request teardown on the owner loop, including an unfinished bind."""
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if self._server is not None:
+            self._server.close()
+        elif self._server_task is not None:
+            self._server_task.cancel()
+
+    async def _stop_on_loop(self):
+        task = self._server_task
+        self._request_stop()
+        # A handler cannot await the server that is waiting for that handler.
+        if task is not None and asyncio.current_task() not in self._client_tasks:
+            await asyncio.shield(task)
 
     async def stop(self):
         """Stop the WebSocket server.
 
-        Closes all client connections and stops the server.
+        Closes the listener and clients, and joins an owned background thread.
         """
-        logger.info("Stopping Bridge...")
-
-        # Close all client connections
-        if self._clients:
-            await asyncio.gather(
-                *[client.close() for client in self._clients], return_exceptions=True
-            )
-
-        # Stop service discovery if enabled
-        if self._service_discovery:
-            try:
-                self._service_discovery.stop()
-                logger.info("Service discovery stopped")
-            except Exception as e:
-                logger.error(f"Failed to stop service discovery: {e}")
-
-        self._is_running = False
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            if self._thread is not None and self._thread is not threading.current_thread():
+                self._thread.join(0.25)
+                if self._thread.is_alive():
+                    raise TimeoutError("Bridge background thread did not exit")
+            return
+        if loop is asyncio.get_running_loop():
+            await self._stop_on_loop()
+        elif self._thread is not None and self._thread.is_alive():
+            loop.call_soon_threadsafe(self._request_stop)
+            await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(self._background_done)), 5)
+            self._thread.join(0.25)
+            if self._thread.is_alive():
+                raise TimeoutError("Bridge background thread did not exit")
+        else:
+            future = asyncio.run_coroutine_threadsafe(self._stop_on_loop(), loop)
+            await asyncio.wait_for(asyncio.wrap_future(future), 5)
         logger.info("Bridge stopped")
 
     async def _handle_client(self, websocket: Any):
@@ -303,6 +412,8 @@ class Bridge:
         logger.info(f"New client connected: {client_addr}")
 
         self._clients.add(websocket)
+        task = asyncio.current_task()
+        self._client_tasks.add(task)
 
         try:
             async for message in websocket:
@@ -312,7 +423,8 @@ class Bridge:
         except Exception as e:
             logger.error(f"Error handling client {client_addr}: {e}", exc_info=True)
         finally:
-            self._clients.remove(websocket)
+            self._clients.discard(websocket)
+            self._client_tasks.discard(task)
             logger.info(f"Client removed: {client_addr} (total: {len(self._clients)})")
 
     async def _process_message(self, message: str, websocket: Any):
