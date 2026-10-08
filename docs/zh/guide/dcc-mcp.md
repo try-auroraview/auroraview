@@ -159,3 +159,9 @@ session.close()  # 释放本面板的订阅，tools/server 继续运行
 提供注册、失效和借用服务行为的实现证据。包与 Core 传输测试不能替代 Blender/Unreal
 原生插件验收。每个消费者还需要固定公开产物，在支持的宿主版本中验证场景读回、
 可用的 Undo 和生命周期清理。
+
+[Maya Outliner 示例](https://github.com/try-auroraview/auroraview-maya-outliner)
+已消费预览 wheel 与 Core 0.20.41。
+[Maya 2026 standalone 验收凭据](https://github.com/try-auroraview/auroraview-maya-outliner/blob/bc934e7e454c59b8f2fd707bf686c68ef432e55d/docs/receipts/maya-contract-preview-1.json)
+记录了 HTTP/MCP 发现、主线程重命名与场景读回、Undo 恢复，以及回调和服务清理。
+该示例现有的 Vue UI 仍走旧路由；交互式 WebView 与停靠验收仍待完成。

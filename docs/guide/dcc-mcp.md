@@ -182,3 +182,10 @@ for registration, invalidation and borrowed-service behavior. Package and Core
 transport checks do not replace a Blender or Unreal plugin's real native host
 acceptance. Each consumer must pin the published artifact and verify scene
 readback, Undo where supported, and cleanup in its supported host versions.
+
+The [Maya Outliner example](https://github.com/try-auroraview/auroraview-maya-outliner)
+consumes the preview wheel with Core 0.20.41. Its
+[Maya 2026 standalone receipt](https://github.com/try-auroraview/auroraview-maya-outliner/blob/bc934e7e454c59b8f2fd707bf686c68ef432e55d/docs/receipts/maya-contract-preview-1.json)
+records HTTP/MCP discovery, main-thread rename and scene readback, Undo restoration,
+and callback/service cleanup. Its existing Vue UI still uses the legacy route;
+interactive WebView and docking acceptance are pending.
