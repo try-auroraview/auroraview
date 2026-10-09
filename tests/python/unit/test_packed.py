@@ -8,12 +8,236 @@ in auroraview.core.packed module.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
 from io import StringIO
+from types import ModuleType
 from typing import Any, Callable, Dict
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+class TestWebViewPackedConstruction:
+    @pytest.mark.parametrize("packed_mode", [False, True])
+    def test_detects_packed_mode_with_native_module(self, monkeypatch, packed_mode):
+        import auroraview.core.packed as packed_module
+        import auroraview.core.webview as webview_module
+
+        native_module = ModuleType("auroraview._core")
+        native_module.WebView = MagicMock()
+        monkeypatch.setitem(sys.modules, "auroraview._core", native_module)
+        monkeypatch.setenv("AURORAVIEW_PACKED", "1" if packed_mode else "0")
+        monkeypatch.setattr(packed_module, "PACKED_MODE", packed_mode)
+        spec = importlib.util.spec_from_file_location(
+            "auroraview.core._packed_webview_test", webview_module.__file__
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        assert module._CoreWebView is native_module.WebView
+        assert module._IS_PACKED_MODE is packed_mode
+
+    def test_native_available_packed_constructor_stays_headless(self, monkeypatch):
+        import auroraview.core.webview as webview_module
+
+        factory = MagicMock()
+        monkeypatch.setattr(webview_module, "_CoreWebView", factory)
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", True)
+        with patch("auroraview.core.packed.is_packed_mode", return_value=True), patch(
+            "auroraview.core.packed.run_api_server"
+        ) as run_api_server:
+            view = webview_module.WebView(debug=False, dcc_mode=False)
+            try:
+                view.show()
+                factory.assert_not_called()
+                assert view._core is None
+                assert view._core_factory is None
+                run_api_server.assert_called_once_with(view)
+            finally:
+                view.close()
+
+    def test_standalone_constructor_uses_native_factory(self, monkeypatch):
+        import auroraview.core.webview as webview_module
+
+        factory = MagicMock()
+        monkeypatch.setattr(webview_module, "_CoreWebView", factory)
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", False)
+        view = webview_module.WebView(title="Standalone", debug=False, dcc_mode=False)
+        try:
+            factory.assert_called_once_with(**view._core_kwargs)
+            assert view._core_kwargs["title"] == "Standalone"
+            assert view._core is factory.return_value
+            assert view._core_factory is factory
+        finally:
+            view.close()
+
+    @pytest.mark.parametrize("packed_mode", [False, True])
+    def test_explicit_native_core_is_retained(self, monkeypatch, packed_mode):
+        import auroraview.core.webview as webview_module
+
+        factory = MagicMock()
+        core = MagicMock()
+        monkeypatch.setattr(webview_module, "_CoreWebView", factory)
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", packed_mode)
+        view = webview_module.WebView(_native_core=core, debug=False, dcc_mode=False)
+        try:
+            factory.assert_not_called()
+            assert view._core is core
+            assert view._core_factory is type(core)
+            assert view._is_embedded is True
+            assert view._is_running is True
+        finally:
+            view.close()
+
+
+class TestPackedServiceApi:
+    @pytest.fixture
+    def packed_view(self, monkeypatch):
+        import auroraview.core.packed as packed_module
+        import auroraview.core.webview as webview_module
+
+        factory = MagicMock()
+        monkeypatch.setattr(webview_module, "_CoreWebView", factory)
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", True)
+        monkeypatch.setattr(packed_module, "PACKED_MODE", True)
+        monkeypatch.setattr(packed_module, "CLI_DUMP_MODE", False)
+        monkeypatch.setattr(packed_module, "CLI_INVOKE_COMMAND", None)
+        monkeypatch.setattr(packed_module, "_stdout_writer", packed_module.StdioWriter())
+        view = webview_module.WebView(debug=False, dcc_mode=False)
+        try:
+            yield view
+        finally:
+            view.close()
+            factory.assert_not_called()
+
+    def test_binding_and_stdio_dispatch_without_native_core(self, packed_view):
+        import auroraview.core.packed as packed_module
+
+        class API:
+            def __init__(self, prefix):
+                self.prefix = prefix
+
+            def echo(self, text):
+                return self.prefix + text
+
+            def add(self, left, right):
+                return left + right
+
+        view = packed_view
+
+        def original(text):
+            return "original:" + text
+
+        def replacement(text):
+            return "replacement:" + text
+
+        view.bind_call("api.echo", original)
+        view.bind_call("api.echo", replacement, allow_rebind=False)
+        assert view._bound_functions["api.echo"] is original
+        view.bind_call("api.echo", replacement)
+        view.bind_api(API("original:"), namespace="tools")
+        original_method = view._bound_functions["tools.echo"]
+        view.bind_api(API("ignored:"), namespace="tools")
+        assert view._bound_functions["tools.echo"] is original_method
+        view.bind_api(API("replacement:"), namespace="tools", allow_rebind=True)
+
+        requests = [
+            {"id": "call", "method": "api.echo", "params": {"text": "hello"}},
+            {"id": "api", "method": "tools.echo", "params": ["hello"]},
+            {"id": "sum", "method": "tools.add", "params": [2, 3]},
+        ]
+        output = StringIO()
+        with patch("sys.stdin", StringIO("\n".join(map(json.dumps, requests)) + "\n")), patch(
+            "sys.stdout", output
+        ), patch("sys.stderr", StringIO()), patch.object(packed_module.signal, "signal"):
+            view.show()
+
+        messages = [json.loads(line) for line in output.getvalue().splitlines()]
+        ready = [message for message in messages if message.get("type") == "ready"]
+        assert ready == [{"type": "ready", "handlers": ["api.echo", "tools.add", "tools.echo"]}]
+        responses = {message["id"]: message for message in messages if "id" in message}
+        assert responses == {
+            "call": {"id": "call", "ok": True, "result": "replacement:hello"},
+            "api": {"id": "api", "ok": True, "result": "replacement:hello"},
+            "sum": {"id": "sum", "ok": True, "result": 5},
+        }
+        assert view._core is None
+        assert view.is_namespace_bound("tools")
+        assert view.get_bound_methods() == ready[0]["handlers"]
+
+    def test_protocol_still_requires_native_core(self, packed_view):
+        with pytest.raises(RuntimeError, match="native core"):
+            packed_view.register_protocol("asset", lambda uri: {"data": b""})
+        assert packed_view._protocol_handlers == {}
+
+    def test_gallery_startup_registers_service_handlers(self, packed_view, monkeypatch):
+        import atexit
+        from pathlib import Path
+
+        import auroraview.core.packed as packed_module
+
+        gallery_dir = Path(__file__).parents[3] / "gallery"
+        monkeypatch.setattr(sys, "path", [str(gallery_dir)] + sys.path)
+        monkeypatch.setenv("AURORAVIEW_RESTART_CMD", "")
+        monkeypatch.delenv("AURORAVIEW_CDP_PORT", raising=False)
+        with patch.object(atexit, "register"), patch.object(
+            packed_module.signal, "signal"
+        ), patch.dict(sys.modules):
+            sys.modules.pop("main", None)
+            gallery = importlib.import_module("main")
+            import backend.child_manager as child_manager
+
+            monkeypatch.setattr(child_manager, "_manager", None)
+            monkeypatch.setattr(
+                child_manager.ChildWindowManager, "start", MagicMock(return_value=0)
+            )
+            gallery.PluginManager = MagicMock()
+            gallery.register_ai_apis = None  # Optional providers are outside startup.
+            with patch.object(packed_module, "run_api_server") as server:
+                gallery.run_gallery()
+            server.assert_called_once()
+            view = server.call_args[0][0]
+            try:
+                assert view._core is None
+                assert {
+                    "api.get_samples",
+                    "api.get_categories",
+                    "api.run_sample",
+                    "api.launch_example_as_child",
+                    "features.get_bookmarks",
+                } <= set(view.get_bound_methods())
+            finally:
+                view.close()
+
+    def test_closed_service_rejects_new_binding(self, packed_view):
+        packed_view.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            packed_view.bind_call("api.late", lambda: None)
+        assert not packed_view.is_method_bound("api.late")
+
+    @pytest.mark.parametrize("binding", ["call", "api"])
+    def test_ordinary_missing_core_rejects_binding(self, monkeypatch, binding):
+        import auroraview.core.packed as packed_module
+        import auroraview.core.webview as webview_module
+
+        monkeypatch.setattr(webview_module, "_CoreWebView", MagicMock(return_value=None))
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", False)
+        monkeypatch.setattr(packed_module, "PACKED_MODE", False)
+        view = webview_module.WebView(debug=False, dcc_mode=False)
+        try:
+            with pytest.raises(RuntimeError, match="native core"):
+                if binding == "call":
+                    view.bind_call("api.echo", lambda: None)
+                else:
+                    view.bind_api(type("API", (), {"echo": lambda self: None})())
+            assert view.get_bound_methods() == []
+            assert not view.is_namespace_bound("api")
+        finally:
+            view.close()
 
 
 class TestIsPackedMode:

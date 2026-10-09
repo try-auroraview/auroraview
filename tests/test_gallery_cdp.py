@@ -237,8 +237,9 @@ class GalleryTestClient:
 
             # Wait for gallery to be ready
             self._wait_for_ready()
-        except Exception:
+        except Exception as error:
             # Ensure cleanup on partial connect failure
+            self._save_diagnostics(error)
             self.disconnect()
             raise
 
@@ -318,6 +319,45 @@ class GalleryTestClient:
         print(f"[CDP] Fallback to first page: {all_pages[0]['url']}")
         return all_pages[0]["page"]
 
+    def _read_status(self):
+        return self._page.evaluate("""
+            () => ({
+                title: document.title,
+                url: location.href,
+                error_info: window._errorInfo || null,
+                is_loading: !!(window.auroraLoading || document.querySelector('.loading-container')),
+                backend_ready: window.__backendReady || false,
+                auroraview_ready: typeof window.auroraview !== 'undefined' &&
+                                 typeof window.auroraview.api !== 'undefined' &&
+                                 typeof window.auroraview.api.get_samples === 'function',
+                diagnostics: window.auroraLoading && window.auroraLoading.getDiagnostics
+                    ? window.auroraLoading.getDiagnostics() : null
+            })
+        """)
+
+    def _save_diagnostics(self, error):
+        """Capture the failure before disconnect closes the error page."""
+        try:
+            diagnostics = {"error": str(error)[:4096]}
+            if self._page:
+                diagnostics["url"] = self._page.url[:4096]
+                try:
+                    snapshot = json.dumps(self._read_status(), ensure_ascii=False)
+                    diagnostics["page"] = (
+                        json.loads(snapshot)
+                        if len(snapshot) <= 65536
+                        else {"truncated": snapshot[:65536]}
+                    )
+                except Exception as capture_error:
+                    diagnostics["capture_error"] = str(capture_error)[:4096]
+            directory = PROJECT_ROOT / "test-results" / "gallery"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "startup.json").write_text(
+                json.dumps(diagnostics, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception as capture_error:
+            print(f"Could not save Gallery diagnostics: {capture_error}")
+
     def _wait_for_ready(self, timeout: int = 60):
         """Wait for gallery to be fully loaded.
 
@@ -330,50 +370,35 @@ class GalleryTestClient:
         # First, check if we're on loading screen
         while time.time() - start < timeout:
             try:
-                # Check loading screen status
-                loading_status = self._page.evaluate("""
-                    () => {
-                        const result = {
-                            is_loading: !!(window.auroraLoading || document.querySelector('.loading-container')),
-                            backend_ready: window.__backendReady || false,
-                            auroraview_ready: typeof window.auroraview !== 'undefined' &&
-                                             typeof window.auroraview.api !== 'undefined' &&
-                                             typeof window.auroraview.api.get_samples === 'function'
-                        };
-
-                        // Get diagnostics if available
-                        if (window.auroraLoading && window.auroraLoading.getDiagnostics) {
-                            result.diagnostics = window.auroraLoading.getDiagnostics();
-                        }
-
-                        return result;
-                    }
-                """)
-
-                # If auroraview is ready, we're good
-                if loading_status.get("auroraview_ready"):
-                    print("Gallery is ready!")
-                    return
-
-                # If on loading screen and timed out, try force navigation
-                if loading_status.get("is_loading"):
-                    elapsed = time.time() - start
-                    if elapsed > LOADING_TIMEOUT:
-                        print(f"Loading timeout after {elapsed:.1f}s, forcing navigation...")
-                        self._force_navigate()
-                        time.sleep(2)
-                        continue
-
-                    # Log diagnostics periodically
-                    if int(elapsed) % 5 == 0 and elapsed > 0:
-                        diag = loading_status.get("diagnostics", {})
-                        print(
-                            f"Loading... elapsed={diag.get('elapsed_ms', 0)}ms, "
-                            f"backend_ready={loading_status.get('backend_ready')}"
-                        )
-
+                loading_status = self._read_status()
             except Exception as e:
                 print(f"Error checking status: {e}")
+                time.sleep(0.5)
+                continue
+
+            if loading_status.get("error_info") or loading_status.get("title", "").startswith(
+                "Error - AuroraView"
+            ):
+                raise RuntimeError(f"Gallery startup failed: {loading_status.get('error_info')}")
+
+            if loading_status.get("auroraview_ready"):
+                print("Gallery is ready!")
+                return
+
+            if loading_status.get("is_loading"):
+                elapsed = time.time() - start
+                if elapsed > LOADING_TIMEOUT:
+                    print(f"Loading timeout after {elapsed:.1f}s, forcing navigation...")
+                    self._force_navigate()
+                    time.sleep(2)
+                    continue
+
+                if int(elapsed) % 5 == 0 and elapsed > 0:
+                    diag = loading_status.get("diagnostics") or {}
+                    print(
+                        f"Loading... elapsed={diag.get('elapsed_ms', 0)}ms, "
+                        f"backend_ready={loading_status.get('backend_ready')}"
+                    )
 
             time.sleep(0.5)
 

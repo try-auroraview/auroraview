@@ -26,6 +26,8 @@ from auroraview.core.mixins import (
     WebViewWindowMixin,
 )
 
+from .packed import is_packed_mode
+
 if TYPE_CHECKING:
     from .bridge import Bridge
     from .channel import ChannelManager
@@ -35,16 +37,12 @@ if TYPE_CHECKING:
     from .state import State
 
 _CORE_IMPORT_ERROR = None
-_IS_PACKED_MODE = False
+_IS_PACKED_MODE = is_packed_mode()
 try:
     from auroraview._core import WebView as _CoreWebView
 except ImportError as e:
     _CoreWebView = None
     _CORE_IMPORT_ERROR = str(e)
-    # Check if running in packed mode where _core.pyd is not needed
-    import os
-
-    _IS_PACKED_MODE = os.environ.get("AURORAVIEW_PACKED", "0") == "1"
 
 logger = logging.getLogger(__name__)
 
@@ -418,8 +416,9 @@ class WebView(
             mode = embed_mode
 
         # Map new parameter names to Rust core (which still uses old names)
-        # In packed mode, _CoreWebView is not available - Python runs as API server
         self._core_factory = type(_native_core) if _native_core is not None else _CoreWebView
+        if _IS_PACKED_MODE and _native_core is None:
+            self._core_factory = None  # The packed Rust launcher owns the window.
         self._core_kwargs = {
             "title": title,
             "width": width,
@@ -458,7 +457,7 @@ class WebView(
         }
         if _native_core is not None:
             self._core = _native_core
-        elif _CoreWebView is not None:
+        elif self._core_factory is not None:
             self._core = self._core_factory(**self._core_kwargs)
         else:
             self._core = None  # Packed mode: no Rust core needed

@@ -40,7 +40,7 @@ use wry::{WebContext, WebViewBuilder as WryWebViewBuilder};
 
 use crate::{load_window_icon, load_window_icon_from_bytes, normalize_url};
 
-use super::backend::start_python_backend_with_ipc;
+use super::backend::{start_python_backend_with_ipc, PythonBackend};
 use super::events::UserEvent;
 use super::utils::{
     build_css_injection_script, escape_js_string, escape_json_for_js, get_webview_data_dir,
@@ -163,7 +163,7 @@ pub fn run_packed_webview(overlay: OverlayData, mut metrics: PackedMetrics) -> R
     }
 
     let needs_python_backend = matches!(config.mode, PackMode::FullStack { .. });
-    let python_backend_state = Arc::new(RwLock::new(None));
+    let python_backend_state: Arc<RwLock<Option<Arc<PythonBackend>>>> = Arc::new(RwLock::new(None));
 
     // Track loading state for FullStack mode
     let loading_screen_ready = Arc::new(AtomicBool::new(false));
@@ -175,6 +175,7 @@ pub fn run_packed_webview(overlay: OverlayData, mut metrics: PackedMetrics) -> R
     if needs_python_backend {
         let python_ready_for_timeout = python_ready.clone();
         let proxy_for_timeout = proxy.clone();
+        let backend_for_timeout = python_backend_state.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(10));
             let is_ready = python_ready_for_timeout.load(Ordering::Relaxed);
@@ -196,6 +197,13 @@ pub fn run_packed_webview(overlay: OverlayData, mut metrics: PackedMetrics) -> R
                 std::thread::sleep(std::time::Duration::from_secs(20));
                 let is_ready_final = python_ready_for_timeout.load(Ordering::Relaxed);
                 if !is_ready_final {
+                    let stderr = backend_for_timeout
+                        .read()
+                        .ok()
+                        .and_then(|backend| {
+                            backend.as_ref().map(|backend| backend.get_last_stderr())
+                        })
+                        .unwrap_or_default();
                     tracing::error!(
                         "[Rust] Python backend ready timeout after 30s, showing error page"
                     );
@@ -203,7 +211,7 @@ pub fn run_packed_webview(overlay: OverlayData, mut metrics: PackedMetrics) -> R
                         code: 503,
                         title: "Backend Initialization Failed".to_string(),
                         message: "The Python backend failed to initialize within the expected time.\n\nThis could be caused by:\n- Missing Python dependencies\n- Syntax errors in your application code\n- Import errors in your modules".to_string(),
-                        details: Some("The backend process may have crashed or is stuck.\nCheck the console output for more details.".to_string()),
+                        details: Some(format!("The backend process may have crashed or is stuck.\nCheck the console output for more details.\n\n{stderr}")),
                         source: "python".to_string(),
                     });
                     let _ = proxy_for_timeout.send_event(UserEvent::PythonReady {
