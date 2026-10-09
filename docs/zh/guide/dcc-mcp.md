@@ -150,11 +150,27 @@ session.close()  # 释放本面板的订阅，tools/server 继续运行
 调用和订阅操作需要位于工具拥有者线程；存在宿主事件资源时，unsubscribe/close 也遵循此约束。
 其他线程发起关闭会立即使入口失效，并报告待清理资源；需要回到拥有者线程重试，才能注销宿主资源。
 
+宿主 unsubscribe 回调必须同步完成。返回 `False`、awaitable 或 Future 类对象会违反契约
+（`ContractError`），清理资源会保持待处理状态。应保留 session 或 binding，在修复适配器失败后，
+回到拥有者线程重试 `close()`。重入关闭不会重复移除同一订阅，也不会提前释放待清理资源；
+外层清理成功时会自行完成，无需再重试。
+
 ## 安装与迁移
 
-独立契约包与原生 wheel 分开构建、发行。请使用
-[预览发行](https://github.com/try-auroraview/auroraview/releases/tag/auroraview-dcc-mcp-v0.1.0-preview.1)
-中的 wheel 与校验和。这是 GitHub 发行产物，不表示已经上架 PyPI。
+独立契约包与原生 wheel 分开构建、发行。请使用固定的
+[preview.2 发行](https://github.com/try-auroraview/auroraview/releases/tag/auroraview-dcc-mcp-v0.1.0-preview.2)
+及其不可变的
+[wheel 地址](https://github.com/try-auroraview/auroraview/releases/download/auroraview-dcc-mcp-v0.1.0-preview.2/auroraview_dcc_mcp-0.1.0-py3-none-any.whl)。
+请在实际宿主的 Python 环境中安装，并替换 `<host-python>`：
+
+```sh
+vx uv pip install --python <host-python> "auroraview-dcc-mcp @ https://github.com/try-auroraview/auroraview/releases/download/auroraview-dcc-mcp-v0.1.0-preview.2/auroraview_dcc_mcp-0.1.0-py3-none-any.whl#sha256=3965ce8cb67889b12dbf28efaf0fd2d93a26032e047d2b1fb7d5ba401eb72cd7"
+```
+
+地址固定了 wheel 的 SHA-256。仅在需要可选 Core 依赖时，将 requirement 中的
+`auroraview-dcc-mcp` 改为 `auroraview-dcc-mcp[core]`。
+wheel 元数据版本仍为 `0.1.0`，不可变发行标签用于选定这次构建。
+GitHub 预览交付与 PyPI 发行是独立渠道；本指南不表示已经上架 PyPI。
 
 原有 `auroraview.dcc_mcp.AuroraViewAdapter`、`AuroraViewQtHost` 和 `start_server`
 保持兼容，它们提供的四个面板检查/导航工具与新增的显式场景能力分别存在。
@@ -167,7 +183,7 @@ session.close()  # 释放本面板的订阅，tools/server 继续运行
 可用的 Undo 和生命周期清理。
 
 [Maya Outliner 示例](https://github.com/try-auroraview/auroraview-maya-outliner)
-已消费预览 wheel 与 Core 0.20.41。
+已消费历史 preview.1 wheel 与 Core 0.20.41。
 [Maya 2026 standalone 验收凭据](https://github.com/try-auroraview/auroraview-maya-outliner/blob/bc934e7e454c59b8f2fd707bf686c68ef432e55d/docs/receipts/maya-contract-preview-1.json)
 记录了 HTTP/MCP 发现、主线程重命名与场景读回、Undo 恢复，以及回调和服务清理。
 默认 Vue UI 保留旧路由。
@@ -188,13 +204,13 @@ dispatcher 仍由宿主拥有。面板在 UI 绑定前选定共享重命名 hand
 从同一个 `ToolSet` 借用 `ToolSession`，Blender 负责场景调度和 GPU 区域。
 [Windows Blender 5.1.1 的已记录探针](https://try-auroraview.github.io/evidence/blender-2026-10-09.json)
 分别通过 36 项生命周期检查和 36 项公开 wheel/SDK/场景检查，包含实际 `bpy` 读回、
-事件隔离及自有资源清理。扩展与 renderer 使用本地实验候选；完整键盘/IME、焦点、
+事件隔离及自有资源清理。契约 wheel 使用 preview.1，扩展与 renderer 使用本地实验候选；完整键盘/IME、焦点、
 前台正常 Stop 和用户验收仍待完成，这些探针也未验证 MCP 传输发现。
 宿主 unsubscribe 必须同步完成，失败时抛异常；公开 session 不支持把 `False`
 或 awaitable 返回值作为清理结果。
 
 [Unity Core 消费者（draft PR #1）](https://github.com/try-auroraview/auroraview-unity/blob/ea25683aa9167ecc6c8156ec85422d91b35a6053/docs/core-runtime.md)
-在外部 Python 中使用公开 Core 0.20.41 与契约 wheel 0.1.0，不在 Unity 内嵌入 Python。
+在外部 Python 中使用公开 Core 0.20.41 与 preview.1 契约 wheel（元数据版本 0.1.0），不在 Unity 内嵌入 Python。
 当前用户命名管道调用与 WebView 共用 C# `SceneContracts`；Unity 仍在
 `EditorApplication.update` 中执行场景访问。先针对绑定的 Editor PID 创建 `SceneTools` 实例，
 再在已有服务注册的执行线程中调用 `tools.attach(existing_server)` 来借用它；

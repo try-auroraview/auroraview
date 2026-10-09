@@ -34,6 +34,27 @@ test-dcc-mcp:
 dcc-mcp-package-check:
     cd packages/auroraview-dcc-mcp; vx just check
 
+# Prepare pinned GitHub release artifacts using SOURCE_RUN_ID and RELEASE_TAG.
+dcc-mcp-release-prepare:
+    vx uv run --no-project --python 3.11 scripts/ci/dcc_mcp_release.py
+
+# Resume partial PyPI uploads only when existing public files match the receipt.
+dcc-mcp-release-pypi-precheck:
+    vx uv run --no-project --python 3.11 scripts/ci/dcc_mcp_release.py --check-pypi before
+
+# Publication succeeds only after official PyPI serves both selected digests.
+dcc-mcp-release-pypi-readback:
+    vx uv run --no-project --python 3.11 scripts/ci/dcc_mcp_release.py --check-pypi after
+
+# Check the release helper without publishing artifacts.
+dcc-mcp-release-check:
+    vx uvx ruff check --target-version py311 scripts/ci/dcc_mcp_release.py scripts/ci/test_dcc_mcp_release.py
+    vx uvx ruff format --check --target-version py311 scripts/ci/dcc_mcp_release.py scripts/ci/test_dcc_mcp_release.py
+    vx uv run --no-project --python 3.11 -m unittest discover -s scripts/ci -p test_dcc_mcp_release.py -v
+
+dcc-mcp-release-format:
+    vx uvx ruff format --target-version py311 scripts/ci/dcc_mcp_release.py scripts/ci/test_dcc_mcp_release.py
+
 test-parent-ipc:
     vx cargo test -p auroraview-core --test parent_ipc_tests
 

@@ -171,12 +171,31 @@ resources exist, must run on the tool owner's thread. A wrong-thread close
 revokes the route immediately and reports pending cleanup; retry it on that
 thread to detach the host resource.
 
+Host unsubscribe callbacks must complete synchronously. `False`, awaitable or
+Future-like results violate the contract (`ContractError`), and cleanup stays
+pending. Retain the session or binding and retry `close()` on the owner thread
+after correcting the adapter failure. Reentrant close neither removes the same
+subscription twice nor releases pending resources early; successful outer
+cleanup settles without another retry.
+
 ## Install and migrate
 
 The independent package is built and released separately from the native wheel.
-Use the wheel and checksum from its
-[preview release](https://github.com/try-auroraview/auroraview/releases/tag/auroraview-dcc-mcp-v0.1.0-preview.1).
-The preview is a GitHub release artifact; it is not a claim of PyPI publication.
+Use the fixed
+[preview.2 release](https://github.com/try-auroraview/auroraview/releases/tag/auroraview-dcc-mcp-v0.1.0-preview.2)
+and its immutable
+[wheel URL](https://github.com/try-auroraview/auroraview/releases/download/auroraview-dcc-mcp-v0.1.0-preview.2/auroraview_dcc_mcp-0.1.0-py3-none-any.whl).
+Install this wheel in the host's Python environment, replacing `<host-python>`:
+
+```sh
+vx uv pip install --python <host-python> "auroraview-dcc-mcp @ https://github.com/try-auroraview/auroraview/releases/download/auroraview-dcc-mcp-v0.1.0-preview.2/auroraview_dcc_mcp-0.1.0-py3-none-any.whl#sha256=3965ce8cb67889b12dbf28efaf0fd2d93a26032e047d2b1fb7d5ba401eb72cd7"
+```
+
+The URL pins the wheel's SHA-256. Add `[core]` to `auroraview-dcc-mcp` in that
+requirement only when you need its optional Core dependency.
+The wheel metadata remains version `0.1.0`; the immutable release tag selects
+this build. GitHub preview delivery and PyPI publication are separate; this
+guide does not claim a PyPI release.
 
 Existing `auroraview.dcc_mcp.AuroraViewAdapter`, `AuroraViewQtHost` and
 `start_server` imports remain supported. Their four panel inspection/navigation
@@ -192,7 +211,7 @@ acceptance. Each consumer must pin the published artifact and verify scene
 readback, Undo where supported, and cleanup in its supported host versions.
 
 The [Maya Outliner example](https://github.com/try-auroraview/auroraview-maya-outliner)
-consumes the preview wheel with Core 0.20.41. Its
+consumes the historical preview.1 wheel with Core 0.20.41. Its
 [Maya 2026 standalone receipt](https://github.com/try-auroraview/auroraview-maya-outliner/blob/bc934e7e454c59b8f2fd707bf686c68ef432e55d/docs/receipts/maya-contract-preview-1.json)
 records HTTP/MCP discovery, main-thread rename and scene readback, Undo restoration,
 and callback/service cleanup. The default Vue UI retains its legacy route.
@@ -219,15 +238,17 @@ borrows a `ToolSession` from the same `ToolSet`; Blender owns scene scheduling
 and the GPU region. The [recorded Windows Blender 5.1.1 probes](https://try-auroraview.github.io/evidence/blender-2026-10-09.json)
 passed 36 lifecycle checks and 36 published-wheel/SDK/scene checks, including
 actual `bpy` readback, event isolation and owned-resource cleanup. These used
-experimental local renderer and extension candidates. Full keyboard/IME,
+the preview.1 contract wheel and experimental local renderer and extension
+candidates. Full keyboard/IME,
 focus, foreground Stop and user acceptance remain open; these probes do not
 verify MCP transport discovery. Host unsubscribe must complete synchronously
 and raise on failure; the published session does not support `False` or an
 awaitable as a cleanup result.
 
 The [Unity Core consumer (draft PR #1)](https://github.com/try-auroraview/auroraview-unity/blob/ea25683aa9167ecc6c8156ec85422d91b35a6053/docs/core-runtime.md)
-uses external Python with public Core 0.20.41 and contract wheel 0.1.0; it embeds
-no Python interpreter in Unity. Current-user named-pipe calls reach the same C#
+uses external Python with public Core 0.20.41 and the preview.1 contract wheel
+(metadata version 0.1.0); it embeds no Python interpreter in Unity.
+Current-user named-pipe calls reach the same C#
 `SceneContracts` as the WebView. Unity retains scene access on `EditorApplication.update`.
 Create a `SceneTools` instance for the bound Editor PID, then call
 `tools.attach(existing_server)` on that server's registered execution lane to

@@ -74,7 +74,7 @@ jobs:
           echo "This will trigger the full release process"
 
   # Try to find and download pre-built wheels from PR checks
-  # IMPORTANT: Only reuse artifacts that were built from the exact same commit SHA
+  # Reuse an exact source SHA, or a merged PR head with the identical whole Git tree.
   check-pr-artifacts:
     name: Check PR Artifacts
     runs-on: ubuntu-latest
@@ -88,72 +88,83 @@ jobs:
       artifacts-available: ${{ steps.check.outputs.available }}
       pr-run-id: ${{ steps.check.outputs.run_id }}
       source-sha: ${{ steps.check.outputs.source_sha }}
+      sdk-available: ${{ steps.check.outputs.sdk_available }}
+      sdk-run-id: ${{ steps.check.outputs.sdk_run_id }}
+      sdk-source-sha: ${{ steps.check.outputs.sdk_source_sha }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Find PR workflow run for this commit
+      - name: Find verified PR artifacts for this tree
         id: check
         uses: actions/github-script@v9
         with:
           script: |
-            // Get the current commit SHA that we're releasing
             const targetSha = context.sha;
-            console.log(`Looking for artifacts built from commit: ${targetSha}`);
-
-            // Find successful PR Checks workflow runs for this exact commit
-            const { data: runs } = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'pr-checks.yml',
-              status: 'success',
-              head_sha: targetSha,  // Only match runs from this exact commit
-              per_page: 10
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            const candidates = [{ sha: targetSha }];
+            const { data: target } = await github.rest.git.getCommit({ ...context.repo, commit_sha: targetSha });
+            const pulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+              ...context.repo, commit_sha: targetSha, per_page: 100,
             });
-
-            if (runs.workflow_runs.length === 0) {
-              console.log(`No PR workflow found for commit ${targetSha}`);
-              core.setOutput('available', 'false');
-              core.setOutput('run_id', '');
-              core.setOutput('source_sha', '');
-              return;
-            }
-
-            // Check if any matching run has our expected artifacts
-            for (const run of runs.workflow_runs) {
-              console.log(`Checking run ${run.id} (commit: ${run.head_sha})`);
-
-              const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: run.id
-              });
-
-              const hasLinux = artifacts.artifacts.some(a => a.name === 'wheels-linux-x86_64');
-              const hasWindows = artifacts.artifacts.some(a => a.name === 'wheels-windows-x64');
-              const hasMacos = artifacts.artifacts.some(a => a.name === 'wheels-macos-universal2-apple-darwin');
-              const hasLinuxPy37 = artifacts.artifacts.some(a => a.name === 'wheels-linux-x86_64-py37');
-              const hasWindowsPy37 = artifacts.artifacts.some(a => a.name === 'wheels-windows-x64-py37');
-
-              // Check for essential platforms (x86_64 + macOS universal2) and CPython 3.7 baseline wheels.
-              // Note: ARM64 wheels are not built (webkit2gtk/wry cross-compilation is not feasible)
-              if (hasLinux && hasWindows && hasMacos && hasLinuxPy37 && hasWindowsPy37) {
-                console.log(`Found matching artifacts from run ${run.id} (commit: ${targetSha})`);
-                console.log(`  Linux x86_64 abi3: ${hasLinux}`);
-                console.log(`  Windows x64 abi3: ${hasWindows}`);
-                console.log(`  macOS universal2 abi3: ${hasMacos}`);
-                console.log(`  Linux x86_64 py37: ${hasLinuxPy37}`);
-                console.log(`  Windows x64 py37: ${hasWindowsPy37}`);
-                core.setOutput('available', 'true');
-                core.setOutput('run_id', run.id.toString());
-                core.setOutput('source_sha', targetSha);
-                return;
+            for (const pull of pulls) {
+              if (!pull.merged_at || pull.merge_commit_sha !== targetSha || pull.base.ref !== 'main' ||
+                  pull.head.repo?.full_name !== repository || pull.base.repo?.full_name !== repository ||
+                  pull.head.sha === targetSha) continue;
+              const { data: source } = await github.rest.git.getCommit({ ...context.repo, commit_sha: pull.head.sha });
+              if (source.tree.sha === target.tree.sha) {
+                candidates.push({ sha: pull.head.sha, branch: pull.head.ref });
+                console.log(`PR #${pull.number} head ${pull.head.sha} has release tree ${target.tree.sha}`);
               }
             }
 
-            console.log(`No suitable artifacts found for commit ${targetSha}, will rebuild`);
             core.setOutput('available', 'false');
-            core.setOutput('run_id', '');
-            core.setOutput('source_sha', '');
+            core.setOutput('sdk_available', 'false');
+            let wheelsAvailable = false;
+            let sdkAvailable = false;
+            const wheelNames = [
+              'wheels-linux-x86_64', 'wheels-windows-x64', 'wheels-macos-universal2-apple-darwin',
+              'wheels-linux-x86_64-py37', 'wheels-windows-x64-py37',
+            ];
+            const sdkJobs = [
+              'SDK CI / Type Check', 'SDK CI / Unit Tests (Node 20)', 'SDK CI / Unit Tests (Node 22)',
+              'SDK CI / Coverage Report', 'SDK CI / Build Package', 'SDK CI / Build Assets',
+              'SDK CI / E2E Tests', 'SDK CI / Gallery Integration', 'SDK CI / SDK Ready',
+            ];
+
+            for (const candidate of candidates) {
+              const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id: 'pr-checks.yml', status: 'success',
+                head_sha: candidate.sha, per_page: 10,
+              });
+              for (const run of runs.workflow_runs) {
+                if (run.head_sha !== candidate.sha || run.status !== 'completed' || run.conclusion !== 'success' ||
+                    run.head_repository?.full_name !== repository ||
+                    (candidate.branch && run.head_branch !== candidate.branch)) continue;
+                const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                  ...context.repo, run_id: run.id, per_page: 100,
+                });
+                const hasArtifact = (name) => artifacts.some(a => a.name === name && a.expired === false && a.size_in_bytes > 0);
+                if (!wheelsAvailable && wheelNames.every(hasArtifact)) {
+                  wheelsAvailable = true;
+                  core.setOutput('available', 'true');
+                  core.setOutput('run_id', String(run.id));
+                  core.setOutput('source_sha', candidate.sha);
+                }
+                if (!sdkAvailable && hasArtifact('pr-sdk-npm-consumer')) {
+                  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                    ...context.repo, run_id: run.id, filter: 'latest', per_page: 100,
+                  });
+                  if (sdkJobs.every(name => jobs.some(job => job.name === name && job.status === 'completed' && job.conclusion === 'success'))) {
+                    sdkAvailable = true;
+                    core.setOutput('sdk_available', 'true');
+                    core.setOutput('sdk_run_id', String(run.id));
+                    core.setOutput('sdk_source_sha', candidate.sha);
+                  }
+                }
+                if (wheelsAvailable && sdkAvailable) return;
+              }
+            }
+            console.log(`Verified reuse: wheels=${wheelsAvailable}, sdk=${sdkAvailable}; unavailable stages will build`);
 
   # Download and re-upload artifacts from PR workflow (if available)
   reuse-pr-wheels:
@@ -163,7 +174,8 @@ jobs:
     if: |
       always() &&
       needs.check-pr-artifacts.result == 'success' &&
-      needs.check-pr-artifacts.outputs.artifacts-available == 'true'
+      needs.check-pr-artifacts.outputs.artifacts-available == 'true' &&
+      !inputs.force-rebuild
     strategy:
       matrix:
         artifact:
@@ -180,14 +192,13 @@ jobs:
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ needs.check-pr-artifacts.outputs.pr-run-id }}
-        continue-on-error: true
 
       - name: Re-upload artifact for release
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
 
   # Fallback: Build wheels if PR artifacts not available
@@ -291,14 +302,42 @@ jobs:
             echo "Screenshots updated and pushed"
           fi
 
-  # Build SDK for npm publishing (uses reusable workflow)
+  # Promote the exact npm archive already checked on an identical source tree.
+  reuse-pr-sdk:
+    name: Reuse PR SDK Archive
+    runs-on: ubuntu-latest
+    needs: [check-pr-artifacts]
+    if: |
+      always() &&
+      needs.check-pr-artifacts.result == 'success' &&
+      needs.check-pr-artifacts.outputs.sdk-available == 'true' &&
+      !inputs.force-rebuild
+    steps:
+      - name: Download verified PR npm archive
+        uses: actions/download-artifact@v8
+        with:
+          name: pr-sdk-npm-consumer
+          path: npm-artifacts/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ needs.check-pr-artifacts.outputs.sdk-run-id }}
+
+      - name: Promote npm archive for release verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-sdk-npm-consumer
+          path: npm-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Build SDK only when a verified archive from the same tree is unavailable.
   build-sdk:
     name: SDK CI
-    needs: [release-please, check-tag]
+    needs: [release-please, check-tag, check-pr-artifacts]
     if: |
       always() &&
       ((needs.release-please.result == 'success' && needs.release-please.outputs.release_created == 'true') ||
-       (needs.check-tag.result == 'success' && needs.check-tag.outputs.is_tag == 'true'))
+       (needs.check-tag.result == 'success' && needs.check-tag.outputs.is_tag == 'true')) &&
+      (needs.check-pr-artifacts.result != 'success' || needs.check-pr-artifacts.outputs.sdk-available != 'true' || inputs.force-rebuild)
     uses: ./.github/workflows/sdk-ci.yml
     with:
       artifact-prefix: 'release-'
@@ -316,12 +355,12 @@ jobs:
   npm-publish:
     name: Publish to npm
     runs-on: ubuntu-latest
-    needs: [release-please, check-tag, build-sdk]
+    needs: [release-please, check-tag, reuse-pr-sdk, build-sdk]
     if: |
       always() &&
       ((needs.release-please.result == 'success' && needs.release-please.outputs.release_created == 'true') ||
        (needs.check-tag.result == 'success' && needs.check-tag.outputs.is_tag == 'true')) &&
-      needs.build-sdk.result == 'success'
+      (needs.reuse-pr-sdk.result == 'success' || needs.build-sdk.result == 'success')
     environment:
       name: npm
       url: https://www.npmjs.com/package/@auroraview/sdk
@@ -389,32 +428,85 @@ jobs:
           echo "Registry: $(node -p 'require("./package.json").publishConfig?.registry || "default"')"
           echo "Access: $(node -p 'require("./package.json").publishConfig?.access || "default"')"
 
-      - name: Download SDK artifact
+      - name: Download verified npm archive
         uses: actions/download-artifact@v8
         with:
-          name: release-sdk-package
-          path: packages/auroraview-sdk/dist/
+          name: release-sdk-npm-consumer
+          path: npm-artifacts/
 
-      - name: Sync version from release tag
+      - name: Verify npm archive and consumer receipt
+        id: archive
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || needs.check-tag.outputs.tag_name }}
         run: |
-          TAG_NAME="${{ needs.release-please.outputs.tag_name || needs.check-tag.outputs.tag_name }}"
-          VERSION=$(echo "$TAG_NAME" | sed 's/auroraview-v//')
-          echo "Setting SDK version to: $VERSION"
-          cd packages/auroraview-sdk
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
+          const { execFileSync } = require('node:child_process');
+          const { createHash } = require('node:crypto');
+          const { appendFileSync, lstatSync, readFileSync, realpathSync } = require('node:fs');
+          const path = require('node:path');
+
+          const expected = JSON.parse(readFileSync('packages/auroraview-sdk/package.json', 'utf8'));
+          assert.equal(expected.name, '@auroraview/sdk', 'Unexpected SDK package name');
+          assert.equal(process.env.RELEASE_TAG, `auroraview-v${expected.version}`, 'Release tag and SDK version differ');
+          const repository = `git+https://github.com/${process.env.GITHUB_REPOSITORY}.git`;
+          assert.equal(expected.repository?.url, repository, 'SDK repository differs from publishing repository');
+
+          const directory = realpathSync('npm-artifacts');
+          const receiptPath = path.join(directory, 'sdk-package-receipt.json');
+          assert(lstatSync(receiptPath).isFile(), 'Consumer receipt must be a regular file');
+          const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+          assert.equal(receipt.status, 'passed', 'Installed npm consumer validation did not pass');
+          assert.equal(receipt.stage, 'complete', 'Consumer validation did not complete');
+          assert.equal(receipt.offline_install, true, 'Archive was not tested offline');
+          assert.equal(receipt.consumer_removed, true, 'Consumer cleanup did not pass');
+          assert.equal(receipt.consumer?.package, expected.name, 'Receipt package name differs');
+          assert.equal(receipt.consumer?.version, expected.version, 'Receipt package version differs');
+
+          const filename = receipt.tarball?.filename;
+          assert.equal(typeof filename, 'string', 'Receipt archive filename is missing');
+          assert(/^[A-Za-z0-9][A-Za-z0-9._+-]*\.tgz$/.test(filename), 'Archive filename must be a contained tgz basename');
+          assert.equal(filename, path.basename(filename), 'Archive path escapes the artifact directory');
+          assert.equal(filename, path.win32.basename(filename), 'Archive path contains Windows separators');
+          const archive = path.join(directory, filename);
+          assert(lstatSync(archive).isFile(), 'Archive must be a regular file');
+          assert.equal(path.dirname(realpathSync(archive)), directory, 'Archive resolves outside the artifact directory');
+          const bytes = readFileSync(archive);
+          assert.equal(bytes.length, receipt.tarball.size, 'Archive size differs from receipt');
+          assert.match(receipt.tarball.sha256, /^[a-f0-9]{64}$/, 'Receipt SHA256 is invalid');
+          assert.equal(createHash('sha256').update(bytes).digest('hex'), receipt.tarball.sha256, 'Archive SHA256 differs from receipt');
+          const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+          assert.equal(receipt.tarball.integrity, integrity, 'Archive integrity differs from receipt');
+
+          const metadata = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/package.json'], {
+            encoding: 'utf8', timeout: 10000, maxBuffer: 1024 * 1024,
+          }));
+          assert.equal(metadata.name, expected.name, 'Packed package name differs');
+          assert.equal(metadata.version, expected.version, 'Packed package version differs');
+          assert.equal(metadata.repository?.url, repository, 'Packed repository differs from publishing repository');
+          appendFileSync(process.env.GITHUB_OUTPUT, `path=${archive}\nversion=${expected.version}\nintegrity=${integrity}\n`);
+          console.log(`Verified ${filename}: ${receipt.tarball.sha256}`);
+          NODE
 
       - name: Publish to npm (OIDC Trusted Publishing)
         id: npm-publish
         shell: bash
+        env:
+          VERIFIED_ARCHIVE: ${{ steps.archive.outputs.path }}
+          SDK_VERSION: ${{ steps.archive.outputs.version }}
+          VERIFIED_INTEGRITY: ${{ steps.archive.outputs.integrity }}
         run: |
-          cd packages/auroraview-sdk
-
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION="$SDK_VERSION"
           echo "Publishing @auroraview/sdk@$VERSION via OIDC trusted publishing..."
 
-          if npm view "@auroraview/sdk@$VERSION" version 2>/dev/null; then
-            echo "Version $VERSION already published, skipping"
+          if EXISTING_DIST=$(npm view "@auroraview/sdk@$VERSION" dist --json --registry https://registry.npmjs.org 2>/dev/null); then
+            EXISTING_DIST="$EXISTING_DIST" node --input-type=commonjs <<'NODE'
+          const assert = require('node:assert/strict');
+          const existing = JSON.parse(process.env.EXISTING_DIST);
+          assert.equal(existing.integrity, process.env.VERIFIED_INTEGRITY, 'Immutable npm version conflicts with the verified archive');
+          NODE
+            echo "Version $VERSION already published with the verified archive integrity, skipping"
             echo "publish_result=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -424,7 +516,7 @@ jobs:
           # Prerequisite: trusted publisher configured on npm for this repo+workflow.
           publish_log=$(mktemp)
           set +e
-          npm publish --provenance --access public --ignore-scripts 2>&1 | tee "$publish_log"
+          npm publish "$VERIFIED_ARCHIVE" --registry https://registry.npmjs.org --provenance --access public --ignore-scripts 2>&1 | tee "$publish_log"
           publish_status=${PIPESTATUS[0]}
           set -e
 
