@@ -139,6 +139,7 @@ jobs:
               - '.github/**'
               - 'justfile'
               - 'scripts/ci/test_gallery_ci.py'
+              - 'scripts/ci/test_gallery_lifecycle.ps1'
               - 'tests/test_gallery_cdp.py'
               - 'scripts/audit_unsafe.py'
               - 'scripts/unsafe_allowlist.txt'

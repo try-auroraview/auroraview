@@ -360,10 +360,24 @@ jobs:
               throw "CDP not ready after 120s"
             }
             $state.stage = 'pytest'
-            vx uv run --with pytest --with playwright pytest tests/test_gallery_cdp.py -v --tb=short -o addopts=
+            $process.Refresh()
+            if ($process.HasExited) {
+              throw "Gallery exited before pytest (exit code $($process.ExitCode))"
+            }
+            vx uv run --with pytest --with playwright pytest tests/test_gallery_cdp.py -v --tb=short -o addopts= --junitxml="$($logs.FullName)\junit.xml"
             $state.pytest_exit_code = $LASTEXITCODE
             if ($LASTEXITCODE -ne 0) {
               throw "Gallery CDP tests failed (exit code $LASTEXITCODE)"
+            }
+            $process.Refresh()
+            if ($process.HasExited) {
+              throw "Gallery exited during pytest (exit code $($process.ExitCode))"
+            }
+            [xml]$report = Get-Content -LiteralPath "$($logs.FullName)\junit.xml" -Raw
+            $state.tests_collected = $report.SelectNodes('//testcase').Count
+            $state.tests_skipped = $report.SelectNodes('//testcase/skipped').Count
+            if ($state.tests_collected -eq 0 -or $state.tests_skipped -ne 0) {
+              throw "Gallery E2E coverage incomplete: $($state.tests_collected) collected, $($state.tests_skipped) skipped"
             }
             $state.stage = 'complete'
           } catch {
@@ -374,18 +388,33 @@ jobs:
             try {
               if ($process) {
                 $process.Refresh()
-                $state.has_exited = $process.HasExited
-                if ($process.HasExited) {
-                  $state.exit_code = $process.ExitCode
-                } else {
+                $state.has_exited_before_cleanup = $process.HasExited
+                if ($process.HasExited -and $state.stage -eq 'complete') {
+                  throw "Gallery exited before cleanup (exit code $($process.ExitCode))"
+                }
+                if (-not $process.HasExited) {
                   $state.cleanup_forced = $true
                   $process.Kill($true)
-                  $process.WaitForExit()
+                  if (-not $process.WaitForExit(5000)) {
+                    throw "Gallery did not exit within 5s of cleanup"
+                  }
                 }
               }
             } catch {
               $cleanupError = $_
               $state.cleanup_error = $_.Exception.Message
+            }
+            try {
+              if ($process) {
+                $process.Refresh()
+                $state.has_exited = $process.HasExited
+                if ($process.HasExited) {
+                  $state.exit_code = $process.ExitCode
+                }
+              }
+            } catch {
+              if (-not $cleanupError) { $cleanupError = $_ }
+              $state.process_state_error = $_.Exception.Message
             }
             $state.finished_at = [DateTime]::UtcNow.ToString('o')
             try {

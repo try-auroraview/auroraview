@@ -112,6 +112,29 @@ class GalleryArtifacts(unittest.TestCase):
 
 
 class GalleryDiagnostics(unittest.TestCase):
+    def test_workflow_lifecycle_failures_and_cleanup_state(self):
+        script = step(
+            workflow("build-gallery.yml")["jobs"]["e2e-test"], "Run Gallery CDP E2E tests"
+        )["run"]
+        path = self.root / "workflow.ps1"
+        path.write_text(script, encoding="utf-8")
+        pwsh = shutil.which("pwsh")
+        self.assertIsNotNone(pwsh, "PowerShell is required to check the Windows workflow lifecycle")
+        result = subprocess.run(
+            [
+                pwsh,
+                "-NoProfile",
+                "-File",
+                str(ROOT / "scripts/ci/test_gallery_lifecycle.ps1"),
+                str(path),
+                str(self.root / "cases"),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.count("Passed offline lifecycle scenario:"), 14)
+
     def test_workflow_keeps_gallery_alive_through_tests_and_records_exit_state(self):
         job = workflow("build-gallery.yml")["jobs"]["e2e-test"]
         lifecycle = step(job, "Run Gallery CDP E2E tests")
