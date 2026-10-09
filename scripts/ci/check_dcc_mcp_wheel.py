@@ -67,6 +67,15 @@ def main():
         shutil.copytree(
             str(args.tests.resolve()), str(tests), ignore=shutil.ignore_patterns("__pycache__")
         )
+        examples = args.tests.resolve().parent / "examples"
+        if examples.is_dir():
+            # Composition examples are application source, not wheel modules.
+            # Copy them explicitly while importing contracts only from the wheel.
+            shutil.copytree(
+                str(examples),
+                str(Path(directory) / "examples"),
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
         environment = dict(os.environ)
         environment.pop("PYTHONPATH", None)
         return subprocess.call(

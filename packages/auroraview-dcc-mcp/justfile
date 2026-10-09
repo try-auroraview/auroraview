@@ -7,12 +7,21 @@ test:
     vx uv run --extra core --extra test python -m pytest tests -v
 
 lint:
-    vx uvx ruff check python tests ../../scripts/ci/check_dcc_mcp_wheel.py
-    vx uvx ruff format --check python tests ../../scripts/ci/check_dcc_mcp_wheel.py
+    vx uvx ruff check python tests examples ../../scripts/ci/check_dcc_mcp_wheel.py
+    vx uvx ruff format --check python tests examples ../../scripts/ci/check_dcc_mcp_wheel.py
 
 format:
-    vx uvx ruff check --fix python tests ../../scripts/ci/check_dcc_mcp_wheel.py
-    vx uvx ruff format python tests ../../scripts/ci/check_dcc_mcp_wheel.py
+    vx uvx ruff check --fix python tests examples ../../scripts/ci/check_dcc_mcp_wheel.py
+    vx uvx ruff format python tests examples ../../scripts/ci/check_dcc_mcp_wheel.py
+
+check-example:
+    vx uvx ruff check examples tests/test_native_tool_client.py
+    vx uvx ruff format --check examples tests/test_native_tool_client.py
+    vx uv run --extra core --extra test python -m pytest tests/test_native_tool_client.py -v
+
+format-example:
+    vx uvx ruff check --fix examples tests/test_native_tool_client.py
+    vx uvx ruff format examples tests/test_native_tool_client.py
 
 check: lint test
 

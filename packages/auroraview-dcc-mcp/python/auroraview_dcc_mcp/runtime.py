@@ -1,6 +1,7 @@
 """Owner and consumer lifetimes, independent of AuroraView and host SDKs."""
 
 import functools
+import inspect
 import re
 import threading
 import uuid
@@ -10,8 +11,26 @@ from . import _registry
 from .contracts import CleanupError, ClosedError, ContractError, ThreadError, Tool, identifier
 
 
+def _require_synchronous(result, message):
+    if (
+        result is False
+        or inspect.isawaitable(result)
+        or (callable(getattr(result, "cancel", None)) and callable(getattr(result, "done", None)))
+    ):
+        if (
+            inspect.iscoroutine(result)
+            and inspect.getcoroutinestate(result) == inspect.CORO_CREATED
+        ):
+            result.close()
+        raise ContractError(message)
+
+
 class ToolSession:
-    """A borrowed tool consumer; close releases only this consumer's resources."""
+    """A borrowed tool consumer; close releases only this consumer's resources.
+
+    Host subscriptions and unsubscriptions must complete synchronously. Failed
+    cleanup revokes delivery but stays owned for a later owner-thread retry.
+    """
 
     def __init__(self, owner):
         self._owner = weakref.ref(owner)
@@ -20,6 +39,7 @@ class ToolSession:
         self._closed = False
         self._subscriptions = {}
         self._pending = {}
+        self._unsubscribing = set()
         self._acquiring = 0
         self.token = _registry.register(self)
 
@@ -60,6 +80,9 @@ class ToolSession:
             unsubscribe = owner._subscribe(
                 event, functools.partial(_registry.deliver, self.token, subscription)
             )
+            _require_synchronous(
+                unsubscribe, "Host subscribe must synchronously return an unsubscribe callable"
+            )
             if not callable(unsubscribe):
                 raise ContractError("Host subscribe must return an unsubscribe callable")
         except Exception:
@@ -96,14 +119,25 @@ class ToolSession:
         with self._lock:
             self._subscriptions.pop(subscription, None)
             unsubscribe = self._pending.get(subscription)
-        if unsubscribe is not None:
+            if unsubscribe is None:
+                return
             if threading.get_ident() != self._thread:
                 raise ThreadError(
                     "Host unsubscription must run on the tool owner's registered thread"
                 )
-            unsubscribe()
+            if subscription in self._unsubscribing:
+                return
+            self._unsubscribing.add(subscription)
+        try:
+            _require_synchronous(
+                unsubscribe(), "Host unsubscribe must complete synchronously before release"
+            )
             with self._lock:
                 self._pending.pop(subscription, None)
+        finally:
+            with self._lock:
+                self._unsubscribing.discard(subscription)
+            self._release_if_clean()
 
     def _cleanup(self):
         errors = []
@@ -130,7 +164,7 @@ class ToolSession:
 
     def _release_if_clean(self):
         with self._lock:
-            if not self._closed or self._pending or self._acquiring:
+            if not self._closed or self._pending or self._unsubscribing or self._acquiring:
                 return
         owner = self._owner()
         if owner is not None:
@@ -170,8 +204,12 @@ class ToolSet:
             raise ContractError("tools must contain Tool declarations")
         if len({tool.name for tool in declarations}) != len(declarations):
             raise ContractError("Tool names must be unique within a set")
-        if subscribe is not None and not callable(subscribe):
-            raise ContractError("subscribe must be callable")
+        if subscribe is not None and (
+            not callable(subscribe)
+            or inspect.iscoroutinefunction(subscribe)
+            or inspect.iscoroutinefunction(subscribe.__call__)
+        ):
+            raise ContractError("subscribe must be synchronous and callable")
         self.description = description
         self.id = uuid.uuid4().hex
         self._thread = threading.get_ident()
