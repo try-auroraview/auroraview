@@ -5,21 +5,39 @@ on:
     paths:
       - 'packages/auroraview-dcc-mcp/**'
       - 'scripts/ci/check_dcc_mcp_wheel.py'
+      - 'scripts/ci/dcc_mcp_release.py'
+      - 'scripts/ci/test_dcc_mcp_release.py'
       - '.github/workflows/dcc-mcp-contracts.yml'
   push:
     branches: [main]
     paths:
       - 'packages/auroraview-dcc-mcp/**'
       - 'scripts/ci/check_dcc_mcp_wheel.py'
+      - 'scripts/ci/dcc_mcp_release.py'
+      - 'scripts/ci/test_dcc_mcp_release.py'
       - '.github/workflows/dcc-mcp-contracts.yml'
     tags: ['auroraview-dcc-mcp-v*']
   workflow_dispatch:
+    inputs:
+      source-run-id:
+        description: 'Successful DCC-MCP contracts run to reuse (requires release-tag)'
+        type: string
+        default: ''
+      release-tag:
+        description: 'Unique auroraview-dcc-mcp-v<version>-preview.<number> tag'
+        type: string
+        default: ''
+      publish-pypi:
+        description: 'Also attempt the selected distributions on official PyPI through OIDC'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   contracts:
+    if: github.event_name != 'workflow_dispatch' || (inputs.source-run-id == '' && inputs.release-tag == '' && !inputs.publish-pypi)
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +60,7 @@ jobs:
           AURORAVIEW_TEST_CORE_VERSION: ${{ matrix.core }}
 
   wheel:
+    if: github.event_name != 'workflow_dispatch' || (inputs.source-run-id == '' && inputs.release-tag == '' && !inputs.publish-pypi)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -54,6 +73,9 @@ jobs:
           tools: 'just uv'
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - run: vx just lint
+      - name: Validate publication guards
+        working-directory: .
+        run: vx just dcc-mcp-release-check
       - run: vx just build
       - name: Consume the installed wheel outside the checkout
         shell: bash
@@ -67,24 +89,136 @@ jobs:
           path: packages/auroraview-dcc-mcp/dist/*
           if-no-files-found: error
 
-  publish-preview:
-    if: startsWith(github.ref, 'refs/tags/auroraview-dcc-mcp-v')
-    needs: [contracts, wheel]
+  reuse:
+    if: github.event_name == 'workflow_dispatch' && (inputs.source-run-id != '' || inputs.release-tag != '' || inputs.publish-pypi)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      contents: write
+      actions: read
+      contents: read
+    outputs:
+      release-tag: ${{ steps.prepare.outputs.release-tag }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: loonghao/vx@6948178844826716e636b474ab322dd8dc115578
+        with:
+          version: '0.9.35'
+          tools: 'just uv'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify source, package inputs and immutable artifact bytes
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source-run-id }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: vx just dcc-mcp-release-prepare
+      - uses: actions/upload-artifact@v7
+        with:
+          name: auroraview-dcc-mcp-release
+          path: release/
+          if-no-files-found: error
+
+  publish-preview:
+    if: >-
+      always() &&
+      ((startsWith(github.ref, 'refs/tags/auroraview-dcc-mcp-v') && needs.contracts.result == 'success' && needs.wheel.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && needs.reuse.result == 'success'))
+    needs: [contracts, wheel, reuse]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: dcc-mcp-preview-${{ inputs.release-tag || github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: loonghao/vx@6948178844826716e636b474ab322dd8dc115578
+        with:
+          version: '0.9.35'
+          tools: 'git gh'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@v7
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: auroraview-dcc-mcp-release
+          path: release
+      - uses: actions/download-artifact@v7
+        if: github.event_name != 'workflow_dispatch'
         with:
           name: auroraview-dcc-mcp-python
-          path: dist
+          path: release/dist
+      - name: Prepare checksums for a normal tag build
+        if: github.event_name != 'workflow_dispatch'
+        run: (cd release/dist && sha256sum *.whl *.tar.gz > ../SHA256SUMS)
+      - name: Read back selected bytes before creating a release
+        run: (cd release/dist && sha256sum --check ../SHA256SUMS)
+      - name: Create or verify the annotated publication tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ needs.reuse.outputs.release-tag }}
+        run: |
+          if vx git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(vx git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+            test "$(vx git rev-parse "refs/tags/$RELEASE_TAG^{}")" = "$GITHUB_SHA"
+          else
+            vx git -c user.name=loonghao -c user.email=hal.long@outlook.com \
+              tag -a "$RELEASE_TAG" "$GITHUB_SHA" -m "AuroraView DCC-MCP $RELEASE_TAG"
+            # The workflow GITHUB_TOKEN does not recursively trigger tag builds.
+            vx git push origin "refs/tags/$RELEASE_TAG"
+          fi
       - name: Publish verified preview artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.reuse.outputs.release-tag || github.ref_name }}
         run: |
-          (cd dist && sha256sum ./*.whl ./*.tar.gz > SHA256SUMS)
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --prerelease \
-            --title "AuroraView DCC-MCP $RELEASE_TAG" \
-            --notes-file packages/auroraview-dcc-mcp/README.md
+          if test -f release/publication.json; then
+            vx gh release create "$RELEASE_TAG" release/dist/* release/SHA256SUMS release/publication.json \
+              --verify-tag --prerelease --title "AuroraView DCC-MCP $RELEASE_TAG" \
+              --notes-file release/notes.md
+          else
+            vx gh release create "$RELEASE_TAG" release/dist/* release/SHA256SUMS \
+              --verify-tag --prerelease --title "AuroraView DCC-MCP $RELEASE_TAG" \
+              --notes-file packages/auroraview-dcc-mcp/README.md
+          fi
+
+  publish-pypi:
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.publish-pypi && needs.reuse.result == 'success' && needs.publish-preview.result == 'success'
+    needs: [reuse, publish-preview]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/auroraview-dcc-mcp
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: loonghao/vx@6948178844826716e636b474ab322dd8dc115578
+        with:
+          version: '0.9.35'
+          tools: 'just uv'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: auroraview-dcc-mcp-release
+          path: release
+      - name: Read back verified distributions
+        run: (cd release/dist && sha256sum --check ../SHA256SUMS)
+      - name: Reject conflicting official PyPI files before upload or retry
+        run: vx just dcc-mcp-release-pypi-precheck
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: release/dist
+          print-hash: true
+          skip-existing: true
+      - name: Require both selected files on official PyPI
+        run: vx just dcc-mcp-release-pypi-readback

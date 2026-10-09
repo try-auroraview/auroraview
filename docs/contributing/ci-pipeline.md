@@ -165,12 +165,17 @@ Note: Linux x86_64 wheels are not uploaded to PyPI because they require system l
 
 ### NPM Publishing
 
-The SDK is published to npm as `@auroraview/sdk`. If publishing fails:
+The SDK release job publishes the verified `@auroraview/sdk` tarball to
+`https://registry.npmjs.org` using OIDC trusted publishing. The existing workflow
+uses GitHub-hosted runners, Node 24 and npm 11, with `id-token: write` and the
+`npm` environment.
 
-1. **Token Expired**: Generate a new token at https://www.npmjs.com/settings/loonghao/tokens
-2. **Create Automation Token**: Select "Automation" type with publish permission
-3. **Update GitHub Secret**: Set `NPM_TOKEN` in repository settings
-4. **Verify Package Access**: Ensure the package exists and you have publish rights
+The npm trusted publisher must match organization `try-auroraview`, repository
+`auroraview`, workflow filename `release.yml`, and environment `npm`. This
+external npm binding needs separate verification; the presence of a repository
+secret named `NPM_TOKEN` does not establish a valid publisher, and this workflow
+does not consume that secret. See the
+[official npm trusted-publisher documentation](https://docs.npmjs.com/trusted-publishers/).
 
 ### PyPI Publishing
 
@@ -179,6 +184,15 @@ The Python package is published to PyPI as `auroraview`. Key considerations:
 1. **File Size Limit**: PyPI has a 100MB limit per file. Source distributions (sdist) often exceed this due to bundled assets, so they are built separately for GitHub Releases only.
 2. **Platform Tags**: Only Windows and macOS wheels are uploaded to PyPI. Linux wheels use non-standard tags and are excluded.
 3. **ABI3 Support**: Python 3.8+ uses abi3 (stable ABI) for a single wheel per platform. Python 3.7 requires separate non-abi3 builds; CI publishes dedicated `cp37` wheels for Linux/Windows, while macOS 3.7 users should build from source.
+
+### DCC-MCP Contract Publication
+
+The independent `auroraview-dcc-mcp` package uses `dcc-mcp-contracts.yml`.
+GitHub preview publication and the optional PyPI trusted-publisher job are
+separate delivery gates. If PyPI fails after the preview succeeds, a maintainer
+must correct publisher configuration, then rerun the failed jobs on that same
+verified publication run. Do not recreate the preview/tag or start another
+dispatch just to retry PyPI.
 
 ## Troubleshooting
 
@@ -201,12 +215,12 @@ The Python package is published to PyPI as `auroraview`. Key considerations:
 
 Error: `404 Not Found - PUT https://registry.npmjs.org/@auroraview%2fsdk`
 
-**Solution**:
-1. Verify npm trusted publishing is linked to this GitHub repository/package, or use `NPM_TOKEN`
-2. Verify `NPM_TOKEN` is set in GitHub repository secrets
-3. Generate a new token at https://www.npmjs.com/settings/loonghao/tokens
-4. Use "Automation" token type with publish permission
-5. Ensure the token hasn't expired
+Inspect the publish job's failure and confirm that the package's npm trusted
+publisher matches `try-auroraview/auroraview`, workflow `release.yml`, environment
+`npm`, and permits direct `npm publish`. A maintainer must correct a missing or
+mismatched external binding before rerunning the failed jobs on the same
+verified release run. Existing-version retries compare the official registry's
+integrity with the verified archive before skipping publication.
 
 ### PyPI publish fails with "File too large"
 
