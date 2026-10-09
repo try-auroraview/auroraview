@@ -325,38 +325,79 @@ jobs:
       - name: Install Playwright
         run: vx just gallery-ci-playwright-install
 
-      - name: Start Gallery with CDP
+      - name: Run Gallery CDP E2E tests
         shell: pwsh
         run: |
           $exe = (Resolve-Path "gallery\pack-output\auroraview-gallery.exe").Path
           $logs = New-Item -ItemType Directory -Force "test-results\gallery"
-          # Start with CDP enabled, wait for process to initialize
-          $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru -WindowStyle Hidden -RedirectStandardOutput "$($logs.FullName)\stdout.log" -RedirectStandardError "$($logs.FullName)\stderr.log"
-          Write-Host "Gallery started with PID: $($process.Id)"
-          # Give the process time to initialize WebView2 and open CDP port
-          # Cold-start on Windows CI runners can take 10-20 seconds for WebView2
-          Start-Sleep -Seconds 15
-
-      - name: Wait for CDP port
-        shell: pwsh
-        run: |
-          # WebView2 cold-start on CI runners can take >60s on first run
-          $deadline = (Get-Date).AddSeconds(120)
-          while ((Get-Date) -lt $deadline) {
-            try {
-              $r = Invoke-WebRequest -Uri 'http://127.0.0.1:9222/json/version' -TimeoutSec 2 -UseBasicParsing
-              if ($r.StatusCode -eq 200) {
-                Write-Host "CDP ready!"
-                exit 0
+          $process = $null
+          $state = [ordered]@{ started_at = [DateTime]::UtcNow.ToString('o'); stage = 'launch'; cdp_ready = $false; cleanup_forced = $false }
+          # Keep the redirected child in this step: the runner can kill descendants when its shell exits.
+          try {
+            $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru -WindowStyle Hidden -RedirectStandardOutput "$($logs.FullName)\stdout.log" -RedirectStandardError "$($logs.FullName)\stderr.log"
+            $state.pid = $process.Id
+            Write-Host "Gallery started with PID: $($process.Id)"
+            Start-Sleep -Seconds 15
+            $state.stage = 'cdp_wait'
+            $deadline = (Get-Date).AddSeconds(120)
+            while ((Get-Date) -lt $deadline) {
+              $process.Refresh()
+              if ($process.HasExited) {
+                throw "Gallery exited before CDP was ready (exit code $($process.ExitCode))"
               }
-            } catch { }
-            Start-Sleep -Milliseconds 1000
+              try {
+                $r = Invoke-WebRequest -Uri 'http://127.0.0.1:9222/json/version' -TimeoutSec 2 -UseBasicParsing
+                if ($r.StatusCode -eq 200) {
+                  $state.cdp_ready = $true
+                  $state.cdp_ready_at = [DateTime]::UtcNow.ToString('o')
+                  Write-Host "CDP ready!"
+                  break
+                }
+              } catch { }
+              Start-Sleep -Milliseconds 1000
+            }
+            if (-not $state.cdp_ready) {
+              throw "CDP not ready after 120s"
+            }
+            $state.stage = 'pytest'
+            vx uv run --with pytest --with playwright pytest tests/test_gallery_cdp.py -v --tb=short -o addopts=
+            $state.pytest_exit_code = $LASTEXITCODE
+            if ($LASTEXITCODE -ne 0) {
+              throw "Gallery CDP tests failed (exit code $LASTEXITCODE)"
+            }
+            $state.stage = 'complete'
+          } catch {
+            $state.error = $_.Exception.Message
+            throw
+          } finally {
+            $cleanupError = $null
+            try {
+              if ($process) {
+                $process.Refresh()
+                $state.has_exited = $process.HasExited
+                if ($process.HasExited) {
+                  $state.exit_code = $process.ExitCode
+                } else {
+                  $state.cleanup_forced = $true
+                  $process.Kill($true)
+                  $process.WaitForExit()
+                }
+              }
+            } catch {
+              $cleanupError = $_
+              $state.cleanup_error = $_.Exception.Message
+            }
+            $state.finished_at = [DateTime]::UtcNow.ToString('o')
+            try {
+              $state | ConvertTo-Json | Set-Content -Encoding utf8 "$($logs.FullName)\process.json"
+            } catch {
+              $cleanupError = $_
+              Write-Warning "Could not save Gallery process diagnostics: $_"
+            }
+            if ($cleanupError -and -not $state.error) {
+              throw $cleanupError
+            }
           }
-          Write-Host "ERROR: CDP not ready after 120s"
-          exit 1
-
-      - name: Run CDP E2E tests
-        run: vx uv run --with pytest --with playwright pytest tests/test_gallery_cdp.py -v --tb=short -o addopts=
         env:
           # This CDP smoke test does not use Qt. Keep pytest-qt from requiring
           # PySide/PyQt in the lean Gallery E2E environment.
@@ -373,14 +414,6 @@ jobs:
             test-results/gallery/
           retention-days: 7
           if-no-files-found: ignore
-
-
-      - name: Stop Gallery
-        if: always()
-        shell: pwsh
-        run: |
-          Get-Process -Name 'auroraview-gallery' -ErrorAction SilentlyContinue | Stop-Process -Force
-
   # Combine all artifacts into one
   # Uses if: always() to run even if some builds fail, ensuring partial releases
   combine-artifacts:

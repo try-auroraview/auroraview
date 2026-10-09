@@ -112,6 +112,27 @@ class GalleryArtifacts(unittest.TestCase):
 
 
 class GalleryDiagnostics(unittest.TestCase):
+    def test_workflow_keeps_gallery_alive_through_tests_and_records_exit_state(self):
+        job = workflow("build-gallery.yml")["jobs"]["e2e-test"]
+        lifecycle = step(job, "Run Gallery CDP E2E tests")
+        script = lifecycle["run"]
+        self.assertEqual(lifecycle["shell"], "pwsh")
+        self.assertEqual(lifecycle["env"]["PYTEST_DISABLE_PLUGIN_AUTOLOAD"], "1")
+        launch = script.index("Start-Process")
+        readiness = script.index("http://127.0.0.1:9222/json/version")
+        tests = script.index("pytest tests/test_gallery_cdp.py")
+        cleanup = script.index("} finally {")
+        self.assertLess(launch, readiness)
+        self.assertLess(readiness, tests)
+        self.assertLess(tests, cleanup)
+        self.assertIn("$process.HasExited", script[launch:readiness])
+        self.assertIn("$state.exit_code = $process.ExitCode", script[cleanup:])
+        self.assertIn("$process.Kill($true)", script[cleanup:])
+        self.assertIn("$state.cleanup_error = $_.Exception.Message", script[cleanup:])
+        self.assertIn("process.json", script[cleanup:])
+        self.assertIn("if ($cleanupError -and -not $state.error)", script[cleanup:])
+        self.assertFalse(any(s.get("name") == "Stop Gallery" for s in job["steps"]))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
