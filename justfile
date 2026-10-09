@@ -55,6 +55,12 @@ dcc-mcp-release-check:
 dcc-mcp-release-format:
     vx uvx ruff format --target-version py311 scripts/ci/dcc_mcp_release.py scripts/ci/test_dcc_mcp_release.py
 
+# Validate Gallery release boundaries and failure diagnostics without launching UI.
+gallery-ci-check:
+    vx uvx ruff check --target-version py311 scripts/ci/test_gallery_ci.py tests/test_gallery_cdp.py
+    vx uvx ruff format --check --target-version py311 scripts/ci/test_gallery_ci.py tests/test_gallery_cdp.py
+    vx uv run --no-project --python 3.11 --with pytest --with pyyaml -m unittest discover -s scripts/ci -p test_gallery_ci.py -v
+
 test-parent-ipc:
     vx cargo test -p auroraview-core --test parent_ipc_tests
 

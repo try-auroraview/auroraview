@@ -840,7 +840,8 @@ jobs:
                     newname="auroraview-gallery-${VERSION}-x86_64-apple-darwin.tar.gz"
                     ;;
                   *)
-                    newname=$(echo "$basename" | sed "s/auroraview-gallery-/auroraview-gallery-${VERSION}-/")
+                    echo "Unexpected Gallery release asset: $basename" >&2
+                    exit 1
                     ;;
                 esac
                 mv "$file" "release-artifacts/$newname"

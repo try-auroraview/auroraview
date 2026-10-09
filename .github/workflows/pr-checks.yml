@@ -138,6 +138,8 @@ jobs:
             ci:
               - '.github/**'
               - 'justfile'
+              - 'scripts/ci/test_gallery_ci.py'
+              - 'tests/test_gallery_cdp.py'
               - 'scripts/audit_unsafe.py'
               - 'scripts/unsafe_allowlist.txt'
               - '.pre-commit-config.yaml'
@@ -334,6 +336,9 @@ jobs:
 
       - name: Check canonical repository links
         run: vx just check-repository-links
+
+      - name: Check Gallery release and diagnostic contracts
+        run: vx just gallery-ci-check
 
       - name: Cache Rust
         uses: actions/cache@v5

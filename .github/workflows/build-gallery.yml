@@ -279,7 +279,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: gallery-${{ matrix.target }}
+          name: gallery-release-${{ matrix.target }}
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
@@ -302,7 +302,7 @@ jobs:
       - name: Download Windows artifact
         uses: actions/download-artifact@v8
         with:
-          name: gallery-x86_64-pc-windows-msvc
+          name: gallery-release-x86_64-pc-windows-msvc
           path: artifacts/
 
       - name: Extract artifact
@@ -328,9 +328,10 @@ jobs:
       - name: Start Gallery with CDP
         shell: pwsh
         run: |
-          $exe = "gallery\pack-output\auroraview-gallery.exe"
+          $exe = (Resolve-Path "gallery\pack-output\auroraview-gallery.exe").Path
+          $logs = New-Item -ItemType Directory -Force "test-results\gallery"
           # Start with CDP enabled, wait for process to initialize
-          $process = Start-Process -FilePath $exe -WorkingDirectory "gallery\pack-output" -PassThru -WindowStyle Normal
+          $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru -WindowStyle Hidden -RedirectStandardOutput "$($logs.FullName)\stdout.log" -RedirectStandardError "$($logs.FullName)\stderr.log"
           Write-Host "Gallery started with PID: $($process.Id)"
           # Give the process time to initialize WebView2 and open CDP port
           # Cold-start on Windows CI runners can take 10-20 seconds for WebView2
@@ -369,6 +370,7 @@ jobs:
           path: |
             gallery/test_screenshot.png
             test-screenshots/
+            test-results/gallery/
           retention-days: 7
           if-no-files-found: ignore
 
@@ -390,7 +392,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: gallery-*
+          pattern: gallery-release-*
           path: artifacts
           merge-multiple: true
         continue-on-error: true
