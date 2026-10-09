@@ -1,6 +1,7 @@
 """Offline Gallery artifact and startup-diagnostic contracts; no browser launches."""
 
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import os
@@ -8,7 +9,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
+import warnings
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -19,6 +23,11 @@ SPEC = importlib.util.spec_from_file_location("gallery_cdp", ROOT / "tests/test_
 cdp = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = cdp
 SPEC.loader.exec_module(cdp)
+STAGE_SPEC = importlib.util.spec_from_file_location(
+    "stage_gallery_wheel", ROOT / "scripts/ci/stage_gallery_wheel.py"
+)
+wheel_stage = importlib.util.module_from_spec(STAGE_SPEC)
+STAGE_SPEC.loader.exec_module(wheel_stage)
 
 
 def workflow(name):
@@ -56,6 +65,20 @@ class GalleryArtifacts(unittest.TestCase):
             capture_output=True,
             text=True,
             env=dict(os.environ, MSYS_NO_PATHCONV="1"),
+        )
+
+    def test_prebuilt_wheel_reaches_collected_python_input(self):
+        for name, job_name in (("build-gallery.yml", "build"), ("pr-checks.yml", "gallery-pack")):
+            install = step(workflow(name)["jobs"][job_name], "Install auroraview wheel")
+            self.assertEqual(install["run"].strip(), "vx just gallery-ci-stage-wheel dist")
+            self.assertIn("GALLERY_SOURCE_HEAD", install["env"])
+            self.assertEqual(
+                install["env"]["GALLERY_WHEEL_ARTIFACT"], "${{ matrix.wheel-artifact }}"
+            )
+        config = tomllib.loads((ROOT / "gallery/auroraview.pack.toml").read_text(encoding="utf-8"))
+        includes = config["backend"]["python"]["include_paths"]
+        self.assertIn(
+            (ROOT / "python").resolve(), [(ROOT / "gallery" / p).resolve() for p in includes]
         )
 
     def test_only_final_archives_reach_release_and_preserve_selected_wheel(self):
@@ -109,6 +132,185 @@ class GalleryArtifacts(unittest.TestCase):
                 self.assertEqual(self.wheel.read_bytes(), b"selected PR wheel")
                 self.assertEqual(asset.read_bytes(), b"unexpected payload")
                 asset.unlink()
+
+
+class GalleryWheelStaging(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.dist = self.root / "dist"
+        self.dist.mkdir()
+        self.payloads = {
+            "auroraview/__init__.py": b"# exact-head Python source\n",
+            "auroraview/core/webview.py": b"# exact-head headless fix\n",
+            "auroraview/_core.pyd": b"native extension fixture; never imported",
+            "auroraview.libs/dependency.dll": b"native dependency fixture; never loaded",
+            "auroraview-1.2.3.dist-info/METADATA": b"Metadata-Version: 2.1\nName: auroraview\nVersion: 1.2.3\n",
+            "auroraview-1.2.3.dist-info/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-any\n",
+        }
+        for name, data in self.payloads.items():
+            if name.endswith(".py"):
+                path = self.root / "python" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        self.source_only = self.root / "python/auroraview/source_only.py"
+        self.source_only.write_bytes(b"# retain source-only files\n")
+        self.wheel = self.dist / "auroraview-1.2.3-py3-none-any.whl"
+        self.receipt = self.root / "test-results/gallery-wheel/receipt.json"
+        self.write_wheel()
+
+    def write_wheel(self, extra=()):
+        with warnings.catch_warnings(), zipfile.ZipFile(self.wheel, "w") as archive:
+            warnings.simplefilter("ignore", UserWarning)
+            for name, data in list(self.payloads.items()) + list(extra):
+                info = zipfile.ZipInfo(name)
+                info.filename = name  # Preserve hostile separators on Windows for path tests.
+                archive.writestr(info, data)
+            archive.writestr(
+                "auroraview-1.2.3.dist-info/RECORD",
+                "\n".join(name + ",," for name in self.payloads)
+                + "\nauroraview-1.2.3.dist-info/RECORD,,\n",
+            )
+
+    def assert_rejected_before_install(self, reason):
+        with (
+            patch.object(wheel_stage.Path, "cwd", return_value=self.root),
+            patch.object(wheel_stage.subprocess, "run") as install,
+        ):
+            with self.assertRaisesRegex(ValueError, reason):
+                wheel_stage.stage(self.dist)
+            install.assert_not_called()
+        self.assertFalse(self.receipt.exists())
+
+    def test_real_uv_install_verifies_package_and_records_native_members(self):
+        # Synthetic wheel checks staging only; it cannot attest a GitHub build or native load.
+        result = subprocess.run(
+            [
+                "vx",
+                "just",
+                "--justfile",
+                str(ROOT / "justfile"),
+                "--working-directory",
+                str(self.root),
+                "gallery-ci-stage-wheel",
+                str(self.dist),
+            ],
+            capture_output=True,
+            text=True,
+            env=dict(
+                os.environ,
+                UV_NO_INDEX="1",
+                UV_OFFLINE="1",
+                UV_PYTHON_DOWNLOADS="never",
+                GALLERY_SOURCE_HEAD="fixture-source-head",
+                GITHUB_SHA="fixture-checkout-sha",
+                GITHUB_RUN_ID="fixture-run-id",
+                GITHUB_RUN_ATTEMPT="fixture-run-attempt",
+                GALLERY_WHEEL_ARTIFACT="fixture-wheel-artifact",
+            ),
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name, data in self.payloads.items():
+            if name.startswith(("auroraview/", "auroraview.libs/")):
+                self.assertEqual(self.root.joinpath("python", name).read_bytes(), data)
+        self.assertEqual(self.source_only.read_bytes(), b"# retain source-only files\n")
+        receipt = json.loads(self.receipt.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["wheel"]["filename"], self.wheel.name)
+        self.assertEqual(
+            receipt["wheel"]["sha256"], hashlib.sha256(self.wheel.read_bytes()).hexdigest()
+        )
+        self.assertEqual(receipt["wheel"]["tags"], ["py3-none-any"])
+        self.assertEqual(
+            receipt["wheel"]["filename_tags"], {"python": "py3", "abi": "none", "platform": "any"}
+        )
+        self.assertEqual(receipt["python_sources_verified"], 2)
+        self.assertEqual(receipt["package_files_verified"], 4)
+        self.assertEqual(
+            receipt["native_members"],
+            [
+                {"path": name, "length": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                for name, data in sorted(self.payloads.items())
+                if name.endswith((".pyd", ".dll"))
+            ],
+        )
+        for key, expected in (
+            ("source_head", "fixture-source-head"),
+            ("checkout_sha", "fixture-checkout-sha"),
+            ("run_id", "fixture-run-id"),
+            ("run_attempt", "fixture-run-attempt"),
+            ("wheel_artifact", "fixture-wheel-artifact"),
+        ):
+            self.assertEqual(receipt["provenance"][key], expected)
+        self.assertIn("not remote attestation", receipt["provenance"]["binding"])
+        self.assertIn("collected packed payload is not verified", receipt["boundary"])
+
+    def test_ambiguous_wheel_directory_rejected(self):
+        self.wheel.unlink()
+        self.assert_rejected_before_install("Exactly one wheel")
+        self.write_wheel()
+        shutil.copyfile(self.wheel, self.dist / "other-1.2.3-py3-none-any.whl")
+        self.assert_rejected_before_install("Exactly one wheel")
+
+    def test_mismatched_checkout_source_rejected(self):
+        source = self.root / "python/auroraview/core/webview.py"
+        source.write_bytes(b"# newer headless fix must not be overwritten\n")
+        self.assert_rejected_before_install("Python source differs from checkout")
+        self.assertEqual(source.read_bytes(), b"# newer headless fix must not be overwritten\n")
+
+    def test_missing_native_extension_rejected(self):
+        del self.payloads["auroraview/_core.pyd"]
+        self.write_wheel()
+        self.assert_rejected_before_install("no native auroraview/_core extension")
+
+    def test_foreign_distribution_rejected(self):
+        self.payloads["auroraview-1.2.3.dist-info/METADATA"] = b"Name: another-package\n"
+        self.write_wheel()
+        self.assert_rejected_before_install("metadata must name auroraview")
+
+    def test_duplicate_and_unsafe_member_paths_rejected(self):
+        for name in (
+            "auroraview/__init__.py",
+            "AuroraView/__init__.py",
+            "auroraview/../outside.py",
+            "auroraview/./outside.py",
+            "auroraview//outside.py",
+            "auroraview\\outside.py",
+            "auroraview/C:outside.py",
+            "/outside.py",
+        ):
+            with self.subTest(name=name):
+                self.write_wheel([(name, b"invalid member")])
+                self.assert_rejected_before_install("Duplicate|Unsafe")
+
+    def test_install_readback_rejects_missing_or_changed_payload(self):
+        for native_bytes in (None, b"changed native extension"):
+            with self.subTest(native_bytes=native_bytes):
+                if native_bytes is not None:
+                    (self.root / "python/auroraview/_core.pyd").write_bytes(native_bytes)
+                with (
+                    patch.object(wheel_stage.Path, "cwd", return_value=self.root),
+                    patch.object(wheel_stage.subprocess, "run"),
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "Staged wheel member differs from archive"
+                    ):
+                        wheel_stage.stage(self.dist)
+                self.assertFalse(self.receipt.exists())
+
+    def test_wheel_changed_during_install_cannot_produce_receipt(self):
+        with (
+            patch.object(wheel_stage.Path, "cwd", return_value=self.root),
+            patch.object(
+                wheel_stage.subprocess,
+                "run",
+                side_effect=lambda *args, **kwargs: self.wheel.write_bytes(b"changed wheel"),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "wheel changed during staging"):
+                wheel_stage.stage(self.dist)
+        self.assertFalse(self.receipt.exists())
 
 
 class GalleryDiagnostics(unittest.TestCase):

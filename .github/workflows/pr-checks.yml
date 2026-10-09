@@ -139,6 +139,7 @@ jobs:
               - '.github/**'
               - 'justfile'
               - 'scripts/ci/test_gallery_ci.py'
+              - 'scripts/ci/stage_gallery_wheel.py'
               - 'scripts/ci/test_gallery_lifecycle.ps1'
               - 'tests/test_gallery_cdp.py'
               - 'scripts/audit_unsafe.py'
@@ -1306,12 +1307,11 @@ jobs:
       - name: Install auroraview wheel
         if: needs.pre-build.result == 'success'
         shell: bash
+        env:
+          GALLERY_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          GALLERY_WHEEL_ARTIFACT: ${{ matrix.wheel-artifact }}
         run: |
-          python -m pip install --upgrade pip
-          wheel_file=$(ls -t dist/*.whl | head -1)
-          echo "Installing wheel: $wheel_file"
-          pip install "$wheel_file"
-          python -c "import auroraview; print(f'auroraview {auroraview.__version__} installed')"
+          vx just gallery-ci-stage-wheel dist
 
       # Download pre-built CLI from cli-build job
       - name: Download pre-built CLI
@@ -1489,6 +1489,14 @@ jobs:
           name: gallery-pack-${{ matrix.os }}
           path: target/pack/auroraview-gallery${{ matrix.exe-ext }}
           retention-days: 3
+
+      - name: Upload native wheel staging receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gallery-native-wheel-${{ matrix.target }}
+          path: test-results/gallery-wheel/receipt.json
+          if-no-files-found: ignore
 
   # =============================================================================
   # Docs Build - Only for documentation changes

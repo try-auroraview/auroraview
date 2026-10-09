@@ -57,9 +57,13 @@ dcc-mcp-release-format:
 
 # Validate Gallery release boundaries and failure diagnostics without launching UI.
 gallery-ci-check:
-    vx uvx ruff check --target-version py311 scripts/ci/test_gallery_ci.py tests/test_gallery_cdp.py
-    vx uvx ruff format --check --target-version py311 scripts/ci/test_gallery_ci.py tests/test_gallery_cdp.py
+    vx uvx ruff check --target-version py311 scripts/ci/test_gallery_ci.py scripts/ci/stage_gallery_wheel.py tests/test_gallery_cdp.py
+    vx uvx ruff format --check --target-version py311 scripts/ci/test_gallery_ci.py scripts/ci/stage_gallery_wheel.py tests/test_gallery_cdp.py
     vx uv run --no-project --python 3.11 --with pytest --with pyyaml -m unittest discover -s scripts/ci -p test_gallery_ci.py -v
+
+# Keep native wheel files beside the source package collected by Gallery pack.
+gallery-ci-stage-wheel wheel_dir:
+    vx uv run --no-project --python 3.11 "{{justfile_directory()}}/scripts/ci/stage_gallery_wheel.py" "{{wheel_dir}}"
 
 test-parent-ipc:
     vx cargo test -p auroraview-core --test parent_ipc_tests

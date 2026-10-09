@@ -8,12 +8,90 @@ in auroraview.core.packed module.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
 from io import StringIO
+from types import ModuleType
 from typing import Any, Callable, Dict
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+class TestWebViewPackedConstruction:
+    @pytest.mark.parametrize("packed_mode", [False, True])
+    def test_detects_packed_mode_with_native_module(self, monkeypatch, packed_mode):
+        import auroraview.core.packed as packed_module
+        import auroraview.core.webview as webview_module
+
+        native_module = ModuleType("auroraview._core")
+        native_module.WebView = MagicMock()
+        monkeypatch.setitem(sys.modules, "auroraview._core", native_module)
+        monkeypatch.setenv("AURORAVIEW_PACKED", "1" if packed_mode else "0")
+        monkeypatch.setattr(packed_module, "PACKED_MODE", packed_mode)
+        spec = importlib.util.spec_from_file_location(
+            "auroraview.core._packed_webview_test", webview_module.__file__
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        assert module._CoreWebView is native_module.WebView
+        assert module._IS_PACKED_MODE is packed_mode
+
+    def test_native_available_packed_constructor_stays_headless(self, monkeypatch):
+        import auroraview.core.webview as webview_module
+
+        factory = MagicMock()
+        monkeypatch.setattr(webview_module, "_CoreWebView", factory)
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", True)
+        with patch("auroraview.core.packed.is_packed_mode", return_value=True), patch(
+            "auroraview.core.packed.run_api_server"
+        ) as run_api_server:
+            view = webview_module.WebView(debug=False, dcc_mode=False)
+            try:
+                view.show()
+                factory.assert_not_called()
+                assert view._core is None
+                assert view._core_factory is None
+                run_api_server.assert_called_once_with(view)
+            finally:
+                view.close()
+
+    def test_standalone_constructor_uses_native_factory(self, monkeypatch):
+        import auroraview.core.webview as webview_module
+
+        factory = MagicMock()
+        monkeypatch.setattr(webview_module, "_CoreWebView", factory)
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", False)
+        view = webview_module.WebView(title="Standalone", debug=False, dcc_mode=False)
+        try:
+            factory.assert_called_once_with(**view._core_kwargs)
+            assert view._core_kwargs["title"] == "Standalone"
+            assert view._core is factory.return_value
+            assert view._core_factory is factory
+        finally:
+            view.close()
+
+    @pytest.mark.parametrize("packed_mode", [False, True])
+    def test_explicit_native_core_is_retained(self, monkeypatch, packed_mode):
+        import auroraview.core.webview as webview_module
+
+        factory = MagicMock()
+        core = MagicMock()
+        monkeypatch.setattr(webview_module, "_CoreWebView", factory)
+        monkeypatch.setattr(webview_module, "_IS_PACKED_MODE", packed_mode)
+        view = webview_module.WebView(_native_core=core, debug=False, dcc_mode=False)
+        try:
+            factory.assert_not_called()
+            assert view._core is core
+            assert view._core_factory is type(core)
+            assert view._is_embedded is True
+            assert view._is_running is True
+        finally:
+            view.close()
 
 
 class TestIsPackedMode:
