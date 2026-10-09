@@ -57,6 +57,11 @@ Core must dispatch to that thread; this package refuses a call on another
 thread. Event delivery and unsubscribe use that same host thread. Failed host
 cleanup remains retryable after the consumer token has been revoked.
 
+For an existing native RPC client, see the
+[composition example and ownership contract](docs/native-clients.md).
+It borrows the client and dispatcher, requires explicit declarations and native
+output schemas, and keeps atomic scene readback in the native handler.
+
 The UI calls `window.auroraview.call('scene.snapshot')`. The MCP binding exposes
 `studio__scene_snapshot`: Core rejects dots in MCP tool IDs, so the binding
 maps dots to underscores and refuses collisions. `agent.method_names` provides

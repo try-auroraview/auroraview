@@ -42,6 +42,7 @@ export function attachPlugin(name: string, api: Record<string, unknown>): void {
  * Wait for auroraview to be available and attach plugin
  */
 export function initPlugin(name: string, api: Record<string, unknown>): void {
+  if (typeof window === 'undefined') return;
   if (window.auroraview) {
     attachPlugin(name, api);
   } else {

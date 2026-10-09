@@ -145,11 +145,24 @@ jobs:
         with:
           version: '0.9.33'
           github-token: ${{ github.token }}
-          tools: 'just bun'
+          tools: 'just bun node@22 npm'
           cache: 'false'
 
       - name: Build SDK
         run: vx just sdk-build
+
+      - name: Test installed npm archive
+        working-directory: packages/auroraview-sdk
+        run: vx just check-package
+
+      - name: Upload npm archive and consumer receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-prefix }}sdk-npm-consumer
+          path: packages/auroraview-sdk/package-artifacts/
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Verify build outputs
         run: |
