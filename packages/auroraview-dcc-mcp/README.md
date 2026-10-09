@@ -77,10 +77,26 @@ contains the complete mutation example and migration notes.
 ```powershell
 vx just install
 vx just check
+vx just test
+vx just test-schema
+vx just test-integration
 vx just build
 vx just test-py37
 vx just test-wheel <built-wheel-path>
 ```
+
+Install dependencies with `install` first. `test` and `test-schema` run uv in
+offline mode, without a Core service. Tests guard Python socket resolvers,
+connect/bind/sendto (and sendmsg where available), and urllib HTTP entry points.
+`test-integration` explicitly starts a
+local Core HTTP/MCP fixture; Python clients can use only numeric loopback
+addresses, with proxy inheritance disabled. `check` includes both suites.
+The discovered-schema client uses the contract validator's local-only resolver,
+including on Python 3.7, so unresolved references fail without remote retrieval.
+Schema `$id` values are resource identifiers, not endpoints to fetch.
+The guard covers Python networking; it does not intercept native code or child
+process networking and does not claim that the framework's separate mDNS or
+live-host suites are offline.
 
 The resulting wheel is independent from the native `auroraview` wheel. Public
 preview installation instructions and artifact checksums are recorded in the

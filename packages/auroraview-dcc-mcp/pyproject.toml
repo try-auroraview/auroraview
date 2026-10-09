@@ -24,7 +24,7 @@ Documentation = "https://try-auroraview.github.io/auroraview/guide/dcc-mcp"
 packages = ["python/auroraview_dcc_mcp"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/test_contracts.py", "tests/test_schema_envelope.py"]
 addopts = "--timeout=60"
 
 [tool.ruff]
