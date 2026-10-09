@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.13](https://github.com/try-auroraview/auroraview/compare/auroraview-v0.5.12...auroraview-v0.5.13) (2026-10-09)
+
+
+### Features
+
+* isolate offscreen rendering and backend ownership ([#506](https://github.com/try-auroraview/auroraview/issues/506)) ([82bb8ed](https://github.com/try-auroraview/auroraview/commit/82bb8ed886ef77de5e281a66139e0c06f0738792))
+* share host tool contracts across UI and DCC-MCP ([f387f7a](https://github.com/try-auroraview/auroraview/commit/f387f7a9f9511642baae24c1cafb8b442dcbd290))
+
+
+### Bug Fixes
+
+* **ci:** preserve Ubuntu mirror replacement groups ([48523ef](https://github.com/try-auroraview/auroraview/commit/48523ef4b58c4d24fc9f584d243e2db0d512e2b2))
+* dispatch host events through explicit owner queues ([6856721](https://github.com/try-auroraview/auroraview/commit/68567212e8672ad4dc581eb4e3e30daac30b4993))
+* **plugins:** accept extension request field aliases ([2212459](https://github.com/try-auroraview/auroraview/commit/2212459651b7eee39645755fc09fa600667148b2))
+* preserve deferred host RPC and owner-thread lifecycle ([b1cc94e](https://github.com/try-auroraview/auroraview/commit/b1cc94e1c42930e92f4c517fe49d21f41a7b10ee))
+* preserve SDK lifecycle and package contracts ([#511](https://github.com/try-auroraview/auroraview/issues/511)) ([320bf3f](https://github.com/try-auroraview/auroraview/commit/320bf3f02e805a7092a152e71b0b6849dcb6ea0c))
+* release Bridge resources on stop ([#504](https://github.com/try-auroraview/auroraview/issues/504)) ([094d97c](https://github.com/try-auroraview/auroraview/commit/094d97c31363d7455c19dc6d9679dd21fb84b1fb))
+
+
+### Documentation
+
+* clarify host tool ownership and acceptance ([8dfa583](https://github.com/try-auroraview/auroraview/commit/8dfa58376bff1e0de064a6f964f8e27a01a27582))
+* connect organization website and host tutorials ([#503](https://github.com/try-auroraview/auroraview/issues/503)) ([083e980](https://github.com/try-auroraview/auroraview/commit/083e980ebe60abe72f07b69725132a510b3ea6a8))
+* define Blender host event delivery semantics ([c2b20c5](https://github.com/try-auroraview/auroraview/commit/c2b20c568093098401064e940218ada5cf560f91))
+* explain Blender shared tool consumption ([46bd86a](https://github.com/try-auroraview/auroraview/commit/46bd86aa7fd93b3e335edeff0a89dc5b540b8af5))
+* point remaining repository links at try-auroraview ([0456287](https://github.com/try-auroraview/auroraview/commit/0456287f4516ffa438d6abb87899429af005a84b))
+* point repository links at try-auroraview and drop vendor agent directories ([5766d0c](https://github.com/try-auroraview/auroraview/commit/5766d0cc3317147bc5c3ce391fbd87a16e6a1d2e))
+* replace agent rules directory with docs pages ([abad156](https://github.com/try-auroraview/auroraview/commit/abad156a3f88eb77267f1c982b685fd3378881be))
+* route Blender integrations to the independent add-on ([eab9508](https://github.com/try-auroraview/auroraview/commit/eab9508013e6d68e0e1521648ff98e378e26658a))
+
 ## [0.5.12](https://github.com/try-auroraview/auroraview/compare/auroraview-v0.5.11...auroraview-v0.5.12) (2026-10-04)
 
 

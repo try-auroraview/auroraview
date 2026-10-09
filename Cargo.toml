@@ -44,7 +44,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.5.12" # x-release-please-version
+version = "0.5.13" # x-release-please-version
 edition = "2021"
 # home 0.5.12+ requires Rust 1.88+, using 1.90 (current stable)
 rust-version = "1.90"
