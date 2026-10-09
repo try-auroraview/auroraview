@@ -12,6 +12,8 @@ import logging
 from threading import Lock, RLock
 from typing import Any, Callable, Dict, Optional, Set
 
+from ..packed import is_packed_mode
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,9 +102,11 @@ class WebViewApiMixin:
             self._call_dispatcher = dispatcher
 
     def _api_registration_core(self) -> Any:
-        """Select a native core only when its owner can register callbacks."""
+        """Select the native callback owner, or the packed Python registry."""
         getter = getattr(self, "_get_active_core", None)
         core = getter() if getter is not None else self._core
+        if core is None and is_packed_mode():
+            return None
         self._check_api_core_owner(core)
         return core
 
@@ -118,6 +122,8 @@ class WebViewApiMixin:
 
     def _register_api_bindings(self, core: Any, bindings: Dict[str, Callable]) -> None:
         """Register each native callback once. Caller holds ``_bind_lock``."""
+        if core is None:
+            return  # Packed stdio dispatch reads the Python registry directly.
         registered = self._api_core_bindings.setdefault(id(core), set())
         callbacks = [
             (name, self._create_ipc_handler(name, func))
@@ -253,6 +259,7 @@ class WebViewApiMixin:
         self._ensure_api_registry()
         with self._bind_lock:
             core = self._api_registration_core()
+            self._check_api_core_owner(core)
             core.register_protocol(scheme, handler)
             self._protocol_handlers[scheme] = handler
             self._protocol_core_bindings.setdefault(id(core), {})[scheme] = handler
