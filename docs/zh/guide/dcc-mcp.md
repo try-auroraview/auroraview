@@ -165,3 +165,12 @@ session.close()  # 释放本面板的订阅，tools/server 继续运行
 [Maya 2026 standalone 验收凭据](https://github.com/try-auroraview/auroraview-maya-outliner/blob/bc934e7e454c59b8f2fd707bf686c68ef432e55d/docs/receipts/maya-contract-preview-1.json)
 记录了 HTTP/MCP 发现、主线程重命名与场景读回、Undo 恢复，以及回调和服务清理。
 该示例现有的 Vue UI 仍走旧路由；交互式 WebView 与停靠验收仍待完成。
+
+[Blender 原生 HTML 消费者](https://github.com/try-auroraview/auroraview-blender/blob/1401b6fec2fdfeae43d565eb8f1428b1699e6260/docs/native-web.md)
+从同一个 `ToolSet` 借用 `ToolSession`，Blender 负责场景调度和 GPU 区域。
+[Windows Blender 5.1.1 的已记录探针](https://try-auroraview.github.io/evidence/blender-2026-10-09.json)
+分别通过 36 项生命周期检查和 36 项公开 wheel/SDK/场景检查，包含实际 `bpy` 读回、
+事件隔离及自有资源清理。扩展与 renderer 使用本地实验候选；完整键盘/IME、焦点、
+前台正常 Stop 和用户验收仍待完成，这些探针也未验证 MCP 传输发现。
+宿主 unsubscribe 必须同步完成，失败时抛异常；公开 session 不支持把 `False`
+或 awaitable 返回值作为清理结果。

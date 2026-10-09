@@ -189,3 +189,14 @@ consumes the preview wheel with Core 0.20.41. Its
 records HTTP/MCP discovery, main-thread rename and scene readback, Undo restoration,
 and callback/service cleanup. Its existing Vue UI still uses the legacy route;
 interactive WebView and docking acceptance are pending.
+
+The [Blender native HTML consumer](https://github.com/try-auroraview/auroraview-blender/blob/1401b6fec2fdfeae43d565eb8f1428b1699e6260/docs/native-web.md)
+borrows a `ToolSession` from the same `ToolSet`; Blender owns scene scheduling
+and the GPU region. The [recorded Windows Blender 5.1.1 probes](https://try-auroraview.github.io/evidence/blender-2026-10-09.json)
+passed 36 lifecycle checks and 36 published-wheel/SDK/scene checks, including
+actual `bpy` readback, event isolation and owned-resource cleanup. These used
+experimental local renderer and extension candidates. Full keyboard/IME,
+focus, foreground Stop and user acceptance remain open; these probes do not
+verify MCP transport discovery. Host unsubscribe must complete synchronously
+and raise on failure; the published session does not support `False` or an
+awaitable as a cleanup result.
