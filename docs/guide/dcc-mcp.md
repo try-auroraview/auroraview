@@ -133,13 +133,21 @@ routes and releases its callbacks. Already executing host work may finish;
 new calls are refused after invalidation.
 
 Generic views need explicit `ui.close()`. Where a view provides the public
-`on_closed` hook, its binding subscribes to that hook. A panel that owns the
+`on_closed` hook, its binding subscribes to that hook. A standalone panel that owns the
 entire tool set must also close that owner. Cleanup failures are reported and
 can be retried; they are not silently reported as complete.
 
-Core's public unload API removes active tools but retains skill catalog
-metadata. A closed trampoline refuses invocation even if stale metadata is
-loaded again. This package does not claim complete removal from the catalog.
+For host integrations, retain the host-owned `ToolSet` and live `AgentBinding`
+outside the panel lifetime. Panel close releases its UI binding, borrowed
+session, subscriptions and view; reopen binds a new view to the same owner.
+Close the owner when the host integration unloads.
+
+With public Core 0.20.41 and facade 0.1.0, `AgentBinding.close()` revokes its
+token and unloads callable tools, but retains SkillCatalog metadata. Public
+registry unregistration does not remove that metadata. Replacing the Agent
+registration with a new owner of the same skill name is currently blocked;
+normal panel reopens reuse the live registration. Closed trampolines still
+refuse stale calls. Complete removal requires a Core-owned catalog lifecycle API.
 
 Consumers that borrow the business tool set use a separate session:
 
@@ -187,8 +195,24 @@ The [Maya Outliner example](https://github.com/try-auroraview/auroraview-maya-ou
 consumes the preview wheel with Core 0.20.41. Its
 [Maya 2026 standalone receipt](https://github.com/try-auroraview/auroraview-maya-outliner/blob/bc934e7e454c59b8f2fd707bf686c68ef432e55d/docs/receipts/maya-contract-preview-1.json)
 records HTTP/MCP discovery, main-thread rename and scene readback, Undo restoration,
-and callback/service cleanup. Its existing Vue UI still uses the legacy route;
-interactive WebView and docking acceptance are pending.
+and callback/service cleanup. The default Vue UI retains its legacy route.
+The [opt-in consumer guide (draft PR #53)](https://github.com/try-auroraview/auroraview-maya-outliner/blob/49aa3ae8ffc5c601bd86849fe09bd145177a682e/docs/SHARED_TOOLS.md)
+uses `OutlinerRuntime(existing_server, dockable=True)` to attach shared tools
+once. Retain the runtime in the host: `open()` opens or reopens a panel,
+`close_view()` closes only the panel, and `close()` runs at final host unload.
+Each panel borrows the same owner; the existing Core service and dispatcher
+remain host-owned. The panel selects the shared rename handler before UI binding
+for compatibility with public AuroraView 0.5.12.
+
+A [recorded Maya 2026 session](https://github.com/try-auroraview/auroraview-maya-outliner/blob/49aa3ae8ffc5c601bd86849fe09bd145177a682e/docs/receipts/maya-gui-partial-2026-10-09.json)
+on 2026-10-09 at `f1231286` observed Vue in the native right dock, UI/MCP rename
+with scene readback, event display, foreground Undo and panel cleanup while the
+borrowed owner and service remained alive.
+The CSS-only `434822e3` check verified rename-field row anchoring, not a completed
+rename commit. The lifecycle implementation at `96c98546` passed controlled
+tests and [source CI](https://github.com/try-auroraview/auroraview-maya-outliner/actions/runs/37876141244);
+its GUI close/reopen acceptance remains pending. Float/redock, resize, native
+close and multi-DPI acceptance also remain pending.
 
 The [Blender native HTML consumer](https://github.com/try-auroraview/auroraview-blender/blob/1401b6fec2fdfeae43d565eb8f1428b1699e6260/docs/native-web.md)
 borrows a `ToolSession` from the same `ToolSet`; Blender owns scene scheduling
@@ -200,3 +224,15 @@ focus, foreground Stop and user acceptance remain open; these probes do not
 verify MCP transport discovery. Host unsubscribe must complete synchronously
 and raise on failure; the published session does not support `False` or an
 awaitable as a cleanup result.
+
+The [Unity Core consumer (draft PR #1)](https://github.com/try-auroraview/auroraview-unity/blob/ea25683aa9167ecc6c8156ec85422d91b35a6053/docs/core-runtime.md)
+uses external Python with public Core 0.20.41 and contract wheel 0.1.0; it embeds
+no Python interpreter in Unity. Current-user named-pipe calls reach the same C#
+`SceneContracts` as the WebView. Unity retains scene access on `EditorApplication.update`.
+Create a `SceneTools` instance for the bound Editor PID, then call
+`tools.attach(existing_server)` on that server's registered execution lane to
+borrow it. The host retains service ownership when a panel or binding closes.
+Creating an owned standalone Core service requires an explicit command, separate
+from opening a panel. The public preview at `12210315` predates this consumer.
+Editor startup was observed. Actual Editor Core and GUI acceptance remain `not_run`.
+See the consumer guide for setup, ownership and validation details.

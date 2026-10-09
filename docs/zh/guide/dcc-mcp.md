@@ -120,11 +120,17 @@ inline 模式为独立运行调用方保留，不能用来证明嵌入宿主的�
 入口失效并释放业务回调。已经执行的宿主任务可能完成，失效后发起的新调用会被拒绝。
 
 通用 view 需要显式调用 `ui.close()`。存在公共 `on_closed` 钩子的 view 会自动订阅
-绑定清理；面板若拥有整个工具集，也必须关闭该拥有者。清理失败会明确报告并允许重试，
+绑定清理；独立面板若拥有整个工具集，也必须关闭该拥有者。清理失败会明确报告并允许重试，
 不能把失败当作清理完成。
 
-Core 公共 unload 接口移除已加载的工具，但保留 Skill 目录元数据。即使旧元数据
-重新加载，已经关闭的 trampoline 仍拒绝调用。本包不声称能完整移除目录条目。
+宿主集成应将宿主拥有的 `ToolSet` 与有效的 `AgentBinding` 保留在面板生命周期之外。
+关闭面板只释放其 UI binding、借用 session、订阅和 view；重新打开时，将新 view
+绑定到同一个 owner。宿主集成卸载时再关闭 owner。
+
+使用公开 Core 0.20.41 与 facade 0.1.0 时，`AgentBinding.close()` 会撤销 token 并
+卸载可调用工具，但保留 SkillCatalog 元数据。公开 registry 注销不能移除这些元数据。
+因此，用同名新 owner 替换 Agent 注册目前仍会失败；正常面板重开复用有效注册。
+已经关闭的 trampoline 仍拒绝旧调用。完整移除需要 Core 提供拥有明确所有权的目录生命周期 API。
 
 业务工具集的借用方使用独立 session：
 
@@ -164,7 +170,19 @@ session.close()  # 释放本面板的订阅，tools/server 继续运行
 已消费预览 wheel 与 Core 0.20.41。
 [Maya 2026 standalone 验收凭据](https://github.com/try-auroraview/auroraview-maya-outliner/blob/bc934e7e454c59b8f2fd707bf686c68ef432e55d/docs/receipts/maya-contract-preview-1.json)
 记录了 HTTP/MCP 发现、主线程重命名与场景读回、Undo 恢复，以及回调和服务清理。
-该示例现有的 Vue UI 仍走旧路由；交互式 WebView 与停靠验收仍待完成。
+默认 Vue UI 保留旧路由。
+[可选消费者指南（draft PR #53）](https://github.com/try-auroraview/auroraview-maya-outliner/blob/49aa3ae8ffc5c601bd86849fe09bd145177a682e/docs/SHARED_TOOLS.md)
+使用 `OutlinerRuntime(existing_server, dockable=True)`，只挂接一次共享工具。
+由宿主持有 runtime：`open()` 打开或重新打开面板，`close_view()` 只关闭面板，
+`close()` 留到宿主最终卸载时调用。每个面板借用同一个 owner，已有 Core 服务与
+dispatcher 仍由宿主拥有。面板在 UI 绑定前选定共享重命名 handler，以兼容公开的 AuroraView 0.5.12。
+
+[Maya 2026 会话记录](https://github.com/try-auroraview/auroraview-maya-outliner/blob/49aa3ae8ffc5c601bd86849fe09bd145177a682e/docs/receipts/maya-gui-partial-2026-10-09.json)
+在 2026-10-09 的 `f1231286` 上观察到原生右侧停靠区中的 Vue、UI/MCP 重命名及场景读回、
+事件显示、前台 Undo 和面板清理，借用的 owner 与服务保持运行。
+仅修改 CSS 的 `434822e3` 检查验证了重命名输入框的行定位，未验证完整的重命名提交。
+生命周期实现 `96c98546` 已通过受控测试与[源码 CI](https://github.com/try-auroraview/auroraview-maya-outliner/actions/runs/37876141244)，
+其 GUI 关闭/重开验收仍待完成。浮动/重新停靠、窗口调整大小、原生关闭与多 DPI 验收也仍待完成。
 
 [Blender 原生 HTML 消费者](https://github.com/try-auroraview/auroraview-blender/blob/1401b6fec2fdfeae43d565eb8f1428b1699e6260/docs/native-web.md)
 从同一个 `ToolSet` 借用 `ToolSession`，Blender 负责场景调度和 GPU 区域。
@@ -174,3 +192,13 @@ session.close()  # 释放本面板的订阅，tools/server 继续运行
 前台正常 Stop 和用户验收仍待完成，这些探针也未验证 MCP 传输发现。
 宿主 unsubscribe 必须同步完成，失败时抛异常；公开 session 不支持把 `False`
 或 awaitable 返回值作为清理结果。
+
+[Unity Core 消费者（draft PR #1）](https://github.com/try-auroraview/auroraview-unity/blob/ea25683aa9167ecc6c8156ec85422d91b35a6053/docs/core-runtime.md)
+在外部 Python 中使用公开 Core 0.20.41 与契约 wheel 0.1.0，不在 Unity 内嵌入 Python。
+当前用户命名管道调用与 WebView 共用 C# `SceneContracts`；Unity 仍在
+`EditorApplication.update` 中执行场景访问。先针对绑定的 Editor PID 创建 `SceneTools` 实例，
+再在已有服务注册的执行线程中调用 `tools.attach(existing_server)` 来借用它；
+面板或 binding 关闭时，服务仍由宿主拥有。
+新建自有 standalone Core 服务需要显式命令，与打开面板分开。公开预览 `12210315`
+早于此消费者。已观察到 Editor 启动，真实 Editor Core 与 GUI 验收仍为 `not_run`。
+安装、所有权及验证细节见消费者指南。
