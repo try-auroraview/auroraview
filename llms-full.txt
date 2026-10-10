@@ -41,7 +41,7 @@ Local development and CI use the same `just` tasks to avoid drift.
 - **Concurrency**: Qt owns the event loop; Rust marshals UI work to the creation thread via task queues. Rust does not take over the message pump.
 - **Standalone**: Retains wry/tao mode for development; may migrate to Win32 + WebView2 top-level window later.
 - **Tools**: `uv` for Python deps, `just` for task running, `vx` as the unified tool wrapper.
-- **Core versions**: Rust 1.90+, PyO3 0.27 (abi3), Wry 0.54, Tao 0.34.
+- **Core versions**: Rust 1.95+, PyO3 0.27 (abi3), Wry 0.54, Tao 0.34.
 
 ## Project Structure
 

@@ -297,7 +297,7 @@ jobs:
         with:
           target: x86_64
           python-version: '3.7'
-          rust-version: '1.90.0'
+          rust-version: '1.95.0'
           maturin-args: '--release --out dist -i python3.7 --features python-bindings,ext-module'
           test-wheel: 'false'
           upload-wheel: 'false'
