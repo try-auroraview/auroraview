@@ -8,7 +8,7 @@ export default defineConfig({
   base: '/auroraview/',
   
   head: [
-    ['link', { rel: 'icon', href: '/auroraview/favicon.ico' }]
+    ['link', { rel: 'icon', type: 'image/png', href: '/auroraview/logo.png' }]
   ],
 
   locales: {
