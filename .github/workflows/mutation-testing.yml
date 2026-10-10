@@ -87,7 +87,7 @@ jobs:
         run: vx just ci-assets-build
 
       - name: Cache Rust
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -274,7 +274,7 @@ jobs:
         run: vx just ci-assets-build
 
       - name: Cache Rust
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -333,7 +333,7 @@ jobs:
         run: vx just ci-assets-build
 
       - name: Cache Rust
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
