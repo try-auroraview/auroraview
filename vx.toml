@@ -11,7 +11,7 @@ just = "latest"
 # (lock + CI + local together); vx-lock-guard verifies the pinned version
 # actually installs.
 python = "3.11.15"
-rust = "1.90.0"
+rust = "1.95.0"
 uv = "latest"
 
 # Windows-only toolchain pieces. Gated via the `os` field so that

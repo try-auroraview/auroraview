@@ -46,8 +46,8 @@ resolver = "2"
 [workspace.package]
 version = "0.5.13" # x-release-please-version
 edition = "2021"
-# home 0.5.12+ requires Rust 1.88+, using 1.90 (current stable)
-rust-version = "1.90"
+# Workspace tests and benchmarks include dcc-mcp-protocols 0.15 (Rust 1.95).
+rust-version = "1.95"
 authors = ["Hal Long <hal.long@outlook.com>"]
 license = "MIT"
 repository = "https://github.com/try-auroraview/auroraview"

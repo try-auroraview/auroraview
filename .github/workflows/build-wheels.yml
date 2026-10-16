@@ -215,8 +215,8 @@ jobs:
         with:
           target: ${{ matrix.target }}
           python-version: '3.7'
-          # Use Rust 1.90.0 for edition2024 support (required by dependencies)
-          rust-version: '1.90.0'
+          # Match the workspace MSRV, including the locked protocol dependency.
+          rust-version: '1.95.0'
           # Non-abi3 build: use python-bindings without abi3 feature
           maturin-args: '--release --out dist -i python3.7 --features python-bindings,ext-module'
           test-wheel: ${{ inputs.test-wheel }}

@@ -13,7 +13,7 @@ inputs:
   rust-version:
     description: 'Rust toolchain version (use older versions for GLIBC compatibility)'
     required: false
-    default: '1.90.0'
+    default: '1.95.0'
   maturin-args:
     description: 'Additional arguments for maturin'
     required: false

@@ -4,7 +4,7 @@
 version = 2
 
 [metadata]
-generated_at = "2026-09-30T10:14:08Z"
+generated_at = "2026-10-04T11:29:22Z"
 vx_version = "0.9.33"
 platform = "x86_64-pc-windows-msvc"
 
@@ -55,9 +55,9 @@ windows-arm64 = "https://github.com/electron/rcedit/releases/download/v2.0.0/rce
 windows-x64 = "https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe"
 
 [tools.rust]
-version = "1.90.0"
+version = "1.95.0"
 source = "provider"
-resolved_from = "1.90.0"
+resolved_from = "1.95.0"
 ecosystem = "generic"
 download_url = "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe"
 
