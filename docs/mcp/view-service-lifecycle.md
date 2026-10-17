@@ -29,8 +29,8 @@ Those require the separate acceptance gates below.
 ## Implemented routing contract
 
 The implementation lives in
-[`adapter_registry.py`](../../python/auroraview/dcc_mcp/adapter_registry.py) and
-the [`WebView skill`](../../skills/auroraview-webview/tools.yaml).
+[`adapter_registry.py`](https://github.com/try-auroraview/auroraview/blob/5ddc1b4d91514d41d64ca089c5da4527177ec694/python/auroraview/dcc_mcp/adapter_registry.py) and
+the [`WebView skill`](https://github.com/try-auroraview/auroraview/blob/5ddc1b4d91514d41d64ca089c5da4527177ec694/skills/auroraview-webview/tools.yaml).
 
 `register(adapter, view_id=...)` returns a `Registration` with a `view_id` and
 fresh opaque `generation`. Omitting `view_id` generates an ID. The registry
@@ -224,9 +224,9 @@ Relevant public APIs already available include:
   public `is_running`, `mcp_url`, and `instance_id` properties.
 - `DccServerBase.load_skill_object()`, `get_skill()`, `get_skill_info()`,
   `unload_skill()`, and public quit-hook registration/removal.
-- [`ToolSet`](../../packages/auroraview-dcc-mcp/python/auroraview_dcc_mcp/runtime.py)
+- [`ToolSet`](https://github.com/try-auroraview/auroraview/blob/5ddc1b4d91514d41d64ca089c5da4527177ec694/packages/auroraview-dcc-mcp/python/auroraview_dcc_mcp/runtime.py)
   declarations with `bind()`, `borrow()`, and `attach()`.
-- [`BackendSession`](../../python/auroraview/integration/backend.py) for borrowing
+- [`BackendSession`](https://github.com/try-auroraview/auroraview/blob/5ddc1b4d91514d41d64ca089c5da4527177ec694/python/auroraview/integration/backend.py) for borrowing
   a public client, preserving its results and request handles, and explicit
   ownership of a separately supplied runtime-stop operation.
 
