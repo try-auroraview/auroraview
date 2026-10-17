@@ -43,6 +43,7 @@ capture what is on screen, and load content.
 
 | Tool | Purpose |
 |---|---|
+| `list_views` | List live view IDs and generations without touching the WebView. |
 | `eval_js` | Evaluate JavaScript in the panel and return the value. |
 | `screenshot` | Capture the page as PNG via `window.auroraview.screenshot`. |
 | `load_url` | Load a URL (`http://`, `https://`, `file://`). |
@@ -57,6 +58,21 @@ dcc-mcp-cli call --tool eval_js --params '{"script": "document.title"}'
 # Capture the current page
 dcc-mcp-cli call --tool screenshot --params '{"format": "png"}'
 ```
+
+With multiple panels in one process, first call `list_views`, then pass the
+selected `view_id` and `generation` to every panel operation. Omitting both is
+supported only when exactly one live view exists; it never selects the most
+recently opened panel. An old generation fails after its registration closes,
+even if a replacement reuses the same view ID.
+
+```bash
+dcc-mcp-cli call --tool list_views --params '{}'
+dcc-mcp-cli call --tool eval_js --params '{"view_id":"<from list_views>","generation":"<from list_views>","script":"document.title"}'
+```
+
+Routing identities are local to the selected host service/process. They are
+not authentication tokens. Discover the intended DCC service first; these
+arguments do not select a different process or start another server.
 
 ## Notes
 

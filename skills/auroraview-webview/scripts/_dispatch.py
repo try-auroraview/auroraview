@@ -34,24 +34,19 @@ def read_params() -> Dict[str, Any]:
     return json.loads(raw) or {}
 
 
-def _find_adapter() -> Any:
-    """Locate the live AuroraView adapter instance.
+def _find_adapter(view_id: Optional[str] = None, generation: Optional[str] = None) -> Any:
+    """Resolve an explicit generation, or the sole registered legacy view.
 
-    Resolution order:
-      1. ``AURORAVIEW_ADAPTER`` env var -- dotted path to a factory returning
-         the adapter (used by hosts that expose one).
-      2. Any live ``AuroraViewAdapter`` registered in-process by
-         :func:`auroraview.dcc_mcp.start_server`. This is the normal path and
-         requires no configuration.
-
-    Returns:
-        The adapter object.
-
-    Raises:
-        RuntimeError: If no adapter can be resolved.
+    The environment factory is a fallback only when no view is registered and
+    no routing identity was supplied. It must never override explicit targeting
+    or hide a multiple-view ambiguity. A Registration checks liveness again at
+    execute(), after any existing host dispatch queue has delayed the call.
     """
     from auroraview.dcc_mcp import adapter_registry
 
+    registration = adapter_registry.resolve(view_id, generation)
+    if registration is not None:
+        return registration
     factory_path = os.environ.get("AURORAVIEW_ADAPTER")
     if factory_path:
         module_name, _, attr = factory_path.rpartition(".")
@@ -62,11 +57,6 @@ def _find_adapter() -> Any:
         module = __import__(module_name, fromlist=[attr])
         adapter = getattr(module, attr)
         return adapter() if callable(adapter) else adapter
-
-    adapter = adapter_registry.current()
-    if adapter is not None:
-        return adapter
-
     raise RuntimeError(
         "No live AuroraView adapter found. Start an AuroraView window with "
         "auroraview.dcc_mcp.start_server(), or set AURORAVIEW_ADAPTER to a "
@@ -86,8 +76,25 @@ def run_tool(tool: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, An
     """
     payload = params if params is not None else read_params()
     try:
-        adapter = _find_adapter()
-        result = adapter.execute(tool, payload)
+        if not isinstance(payload, dict):
+            raise TypeError("Tool parameters must be an object")
+        payload = dict(payload)
+        if tool == "list_views":
+            from auroraview.dcc_mcp import adapter_registry
+
+            if payload:
+                raise ValueError("list_views does not accept parameters")
+            result = {"ok": True, "views": adapter_registry.list_views()}
+        else:
+            if ("view_id" in payload or "generation" in payload) and (
+                not isinstance(payload.get("view_id"), str)
+                or not isinstance(payload.get("generation"), str)
+            ):
+                raise ValueError("view_id and generation must be supplied together as strings")
+            view_id = payload.pop("view_id", None)
+            generation = payload.pop("generation", None)
+            adapter = _find_adapter(view_id, generation)
+            result = adapter.execute(tool, payload)
     except Exception as exc:  # noqa: BLE001 - surfaced to the agent as JSON
         result = {"ok": False, "tool": tool, "error": str(exc)}
     print(json.dumps(result))

@@ -196,7 +196,7 @@ def test_loaded_skill_tools_are_invocable(started):
 
     Guards against a skill declaring tools the dispatch path cannot reach.
     """
-    adapter, server = started
+    _adapter, server = started
     server.load_skill(SKILL_NAME)
     info = server.get_skill_info(SKILL_NAME)
     tools = {t.get("name") if isinstance(t, dict) else t for t in info.get("tools", [])}
@@ -208,9 +208,26 @@ def test_loaded_skill_tools_are_invocable(started):
         "load_url": {"url": "https://example.com"},
         "load_html": {"html": "<p>x</p>"},
     }
-    for name in sorted(tools):
-        result = adapter.execute(name, params.get(name, {}))
-        assert result["ok"] is True, "tool %r failed: %r" % (name, result)
+    # The adapter owns four panel operations; route discovery belongs to the
+    # skill dispatcher. Exercise each advertised tool through that real script
+    # path rather than assuming every skill tool is an adapter method.
+    sys.path.insert(0, SCRIPTS_DIR)
+    try:
+        import _dispatch
+
+        discovered = _dispatch.run_tool("list_views", {})
+        assert discovered["ok"] is True
+        assert len(discovered["views"]) == 1
+        route = discovered["views"][0]
+        for name in sorted(tools):
+            payload = dict(params.get(name, {}))
+            if name != "list_views":
+                payload.update(route)
+            result = _dispatch.run_tool(name, payload)
+            assert result["ok"] is True, "tool %r failed: %r" % (name, result)
+    finally:
+        if SCRIPTS_DIR in sys.path:
+            sys.path.remove(SCRIPTS_DIR)
 
 
 def test_registered_dispatcher_satisfies_core_protocol(started):

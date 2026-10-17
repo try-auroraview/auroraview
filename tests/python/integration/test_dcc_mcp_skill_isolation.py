@@ -6,7 +6,7 @@ dcc-mcp" finds Maya tools, and asking about the AuroraView panel finds
 AuroraView tools -- without the two sets bleeding into each other.
 
 Asserted here:
-1. The ``auroraview-webview`` skill declares exactly its four WebView tools
+1. The ``auroraview-webview`` skill declares its four WebView tools plus route discovery
    and no scene/selection/rigging tools.
 2. The skill is tagged to the ``auroraview`` DCC, not to a DCC host.
 3. A WebView-specific query resolves to the AuroraView skill.
@@ -46,7 +46,7 @@ SKILLS_DIR = os.path.join(
 )
 
 #: The tool set AuroraView intentionally exposes.
-EXPECTED_TOOLS = {"eval_js", "screenshot", "load_url", "load_html"}
+EXPECTED_TOOLS = {"eval_js", "screenshot", "load_url", "load_html", "list_views"}
 
 #: Vocabulary belonging to DCC scene work. None of these may be advertised as
 #: an AuroraView tool, otherwise an agent looking for Maya scene operations
@@ -101,7 +101,7 @@ def _free_port() -> int:
 
 
 def test_skill_declares_exactly_the_webview_tools(server):
-    """The AuroraView skill exposes its four tools and nothing else."""
+    """The AuroraView skill exposes four WebView tools plus route discovery and nothing else."""
     server.load_skill(SKILL_NAME)
     info = server.get_skill_info(SKILL_NAME)
     tools = {t.get("name") if isinstance(t, dict) else t for t in info.get("tools", [])}

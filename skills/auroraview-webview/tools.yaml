@@ -16,6 +16,16 @@ tools:
     input_schema:
       type: object
       properties:
+        view_id: &view_id
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Target from list_views. Supply together with generation; omission requires exactly one live view.
+        generation: &generation
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Exact generation returned by list_views; a closed or replaced view is rejected.
         script:
           type: string
           description: JavaScript code to evaluate.
@@ -24,6 +34,9 @@ tools:
           description: Evaluation budget in milliseconds (default 5000).
       required: [script]
       additionalProperties: false
+      dependencies:
+        view_id: [generation]
+        generation: [view_id]
     output_schema:
       type: object
       properties:
@@ -44,6 +57,8 @@ tools:
     input_schema:
       type: object
       properties:
+        view_id: *view_id
+        generation: *generation
         format:
           type: string
           description: Image format (default png).
@@ -53,6 +68,9 @@ tools:
           description: Capture the full page instead of the viewport.
           default: false
       additionalProperties: false
+      dependencies:
+        view_id: [generation]
+        generation: [view_id]
     output_schema:
       type: object
       properties:
@@ -74,11 +92,16 @@ tools:
     input_schema:
       type: object
       properties:
+        view_id: *view_id
+        generation: *generation
         url:
           type: string
           description: URL to load.
       required: [url]
       additionalProperties: false
+      dependencies:
+        view_id: [generation]
+        generation: [view_id]
     output_schema:
       type: object
       properties:
@@ -98,11 +121,16 @@ tools:
     input_schema:
       type: object
       properties:
+        view_id: *view_id
+        generation: *generation
         html:
           type: string
           description: HTML content to load.
       required: [html]
       additionalProperties: false
+      dependencies:
+        view_id: [generation]
+        generation: [view_id]
     output_schema:
       type: object
       properties:
@@ -110,4 +138,28 @@ tools:
           type: boolean
         length:
           type: integer
+      required: [ok]
+
+  - name: list_views
+    summary: List live AuroraView routing identities.
+    description: Returns view_id and generation for explicit, non-ambiguous window routing. Does not create a service or view.
+    tags: [discovery, views, auroraview]
+    source_file: scripts/list_views.py
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        views:
+          type: array
+          items:
+            type: object
+            properties:
+              view_id: {type: string}
+              generation: {type: string}
+            required: [view_id, generation]
       required: [ok]
