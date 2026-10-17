@@ -1,0 +1,48 @@
+name: DCC-MCP view routing
+
+# Pure source contracts remain visible even when native wheel builds are blocked.
+on:
+  pull_request:
+    paths:
+      - 'python/auroraview/dcc_mcp/**'
+      - 'skills/auroraview-webview/**'
+      - 'tests/python/unit/test_dcc_mcp_view_routing.py'
+      - 'tests/python/integration/test_dcc_mcp_skill_isolation.py'
+      - 'tests/python/integration/test_dcc_mcp_tool_invocation.py'
+      - 'justfile'
+      - '.github/workflows/dcc-mcp-view-routing.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'python/auroraview/dcc_mcp/**'
+      - 'skills/auroraview-webview/**'
+      - 'tests/python/unit/test_dcc_mcp_view_routing.py'
+      - 'tests/python/integration/test_dcc_mcp_skill_isolation.py'
+      - 'tests/python/integration/test_dcc_mcp_tool_invocation.py'
+      - 'justfile'
+      - '.github/workflows/dcc-mcp-view-routing.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    name: Isolated routing (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.7', '3.11']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: loonghao/vx@6948178844826716e636b474ab322dd8dc115578
+        with:
+          version: '0.9.35'
+          tools: 'just uv'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run source contracts without optional Core or native dependencies
+        run: vx just test-dcc-mcp-routing ${{ matrix.python }}
+      - name: Check changed routing Python sources
+        if: matrix.python == '3.11'
+        run: vx just lint-dcc-mcp-routing

@@ -28,8 +28,12 @@ check-repository-links:
     vx python scripts/check_repository_links.py
 
 # Pure source routing contracts: no optional DCC-MCP/native runtime required.
-test-dcc-mcp-routing:
-    vx uv run --no-project python -m unittest discover -s tests/python/unit -p test_dcc_mcp_view_routing.py -v
+test-dcc-mcp-routing python_version="3.11":
+    vx uv run --no-project --python "{{python_version}}" python -m unittest discover -s tests/python/unit -p test_dcc_mcp_view_routing.py -v
+
+lint-dcc-mcp-routing:
+    vx uvx ruff check python/auroraview/dcc_mcp/adapter_registry.py skills/auroraview-webview/scripts/_dispatch.py skills/auroraview-webview/scripts/list_views.py tests/python/unit/test_dcc_mcp_view_routing.py tests/python/integration/test_dcc_mcp_skill_isolation.py tests/python/integration/test_dcc_mcp_tool_invocation.py
+    vx uvx ruff format --check python/auroraview/dcc_mcp/adapter_registry.py skills/auroraview-webview/scripts/_dispatch.py skills/auroraview-webview/scripts/list_views.py tests/python/unit/test_dcc_mcp_view_routing.py tests/python/integration/test_dcc_mcp_skill_isolation.py tests/python/integration/test_dcc_mcp_tool_invocation.py
 
 # Optional integration tests stay independent of GUI/native runtime acceptance.
 test-dcc-mcp:
