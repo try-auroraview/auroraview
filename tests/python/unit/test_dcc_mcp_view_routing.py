@@ -159,7 +159,9 @@ class ViewRoutingTests(unittest.TestCase):
             except ValueError as exc:
                 failures.append(exc)
 
-        workers = [threading.Thread(target=register, args=(adapter,)) for adapter in (self.a, self.b)]
+        workers = [
+            threading.Thread(target=register, args=(adapter,)) for adapter in (self.a, self.b)
+        ]
         for worker in workers:
             worker.start()
         for worker in workers:

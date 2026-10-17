@@ -73,7 +73,9 @@ class Registration:
         with _lock:
             adapter = self._adapter()
             if _entries.get(self.view_id) is not self or adapter is None:
-                raise StaleViewError("AuroraView route is no longer active: {}".format(self.view_id))
+                raise StaleViewError(
+                    "AuroraView route is no longer active: {}".format(self.view_id)
+                )
             return adapter
 
     def execute(self, tool: str, params: Any) -> Any:
@@ -132,7 +134,9 @@ def unregister(adapter: Any) -> None:
                 entry.close()
 
 
-def resolve(view_id: Optional[str] = None, generation: Optional[str] = None) -> Optional[Registration]:
+def resolve(
+    view_id: Optional[str] = None, generation: Optional[str] = None
+) -> Optional[Registration]:
     """Resolve a view route; explicit IDs require their matching generation."""
     if view_id is None and generation is not None:
         raise ValueError("generation requires view_id")
