@@ -57,7 +57,6 @@ chrono = "0.4"
 
 # Embedded assets
 rust-embed = { version = "8.5", features = ["include-exclude"] }
-auroraview-workspace-hack = { version = "0.1", path = "../auroraview-workspace-hack" }
 
 [dev-dependencies]
 tempfile = "3.20"
