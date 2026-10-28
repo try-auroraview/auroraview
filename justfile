@@ -594,6 +594,13 @@ hakari-check:
     vx cargo hakari generate --diff
     vx cargo hakari manage-deps --dry-run
 
+# Verify the crates.io packaging stack without publishing.
+publish-preflight: hakari-check
+    vx python -m unittest discover -s tests/python/unit -p test_publish_preflight.py -v
+    vx cargo package -p auroraview-contract --allow-dirty --no-verify
+    vx cargo package -p auroraview-extensions --allow-dirty --no-verify
+    vx cargo package -p auroraview-protect --allow-dirty --no-verify
+
 # Verify Rust unsafe usage stays inside reviewed FFI boundaries
 unsafe-audit:
     @echo "Auditing Rust unsafe usage..."
