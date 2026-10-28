@@ -60,7 +60,11 @@ jobs:
   incremental:
     name: Incremental Mutations
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The examined src/ipc/** set yields ~200 mutants, each costing ~12s
+    # build + ~3s test, so a complete run needs roughly 50 minutes. The
+    # former 30-minute cap cancelled step 10 mid-run (129/200 mutants
+    # tested) and left the check cancelled despite a valid honest result.
+    timeout-minutes: 60
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
