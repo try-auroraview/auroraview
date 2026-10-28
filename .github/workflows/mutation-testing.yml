@@ -134,31 +134,19 @@ jobs:
           exit_code=${PIPESTATUS[0]}
           echo "exit_code=$exit_code" >> $GITHUB_ENV
 
+      # Parse via a unit-tested helper instead of inline `grep -c ... || echo 0`.
+      # The old pattern returned "0\n0" on empty files (grep -c prints 0 AND
+      # exits 1), which crashed $((caught + missed)) under `bash -e`, and a
+      # missing/empty result set was reported as score=100 "all caught".
       - name: Parse mutation results
         if: steps.changed.outputs.skip != 'true' && always()
         id: results
         run: |
-          if [ -d "mutants.out" ]; then
-            total=$(grep -c "." mutants.out/caught.txt 2>/dev/null || echo "0")
-            caught=$(grep -c "." mutants.out/caught.txt 2>/dev/null || echo "0")
-            missed=$(grep -c "." mutants.out/missed.txt 2>/dev/null || echo "0")
-            timeout=$(grep -c "." mutants.out/timeout.txt 2>/dev/null || echo "0")
-            unviable=$(grep -c "." mutants.out/unviable.txt 2>/dev/null || echo "0")
-            if [ "$((caught + missed))" -gt 0 ]; then
-              score=$(( caught * 100 / (caught + missed) ))
-            else
-              score=100
-            fi
-            echo "caught=$caught" >> $GITHUB_OUTPUT
-            echo "missed=$missed" >> $GITHUB_OUTPUT
-            echo "timeout=$timeout" >> $GITHUB_OUTPUT
-            echo "unviable=$unviable" >> $GITHUB_OUTPUT
-            echo "score=$score" >> $GITHUB_OUTPUT
-          else
-            echo "caught=0" >> $GITHUB_OUTPUT
-            echo "missed=0" >> $GITHUB_OUTPUT
-            echo "score=100" >> $GITHUB_OUTPUT
-          fi
+          python3 scripts/ci/parse_mutation_results.py \
+            --mutants-out mutants.out \
+            --exit-code "${exit_code:-}" \
+            --output "$GITHUB_OUTPUT" \
+            --comment-file mutation-comment.md
 
       - name: Comment PR with mutation results
         if: steps.changed.outputs.skip != 'true' && always() && github.event.pull_request.head.repo.full_name == github.repository
@@ -166,29 +154,12 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const caught = '${{ steps.results.outputs.caught }}';
-            const missed = '${{ steps.results.outputs.missed }}';
-            const score = '${{ steps.results.outputs.score }}';
-            const timeout = '${{ steps.results.outputs.timeout }}';
-
-            let body = '## Mutation Testing Results\n\n';
-            body += `| Metric | Value |\n|--------|-------|\n`;
-            body += `| Caught | ${caught} |\n`;
-            body += `| Missed | ${missed} |\n`;
-            body += `| Timeout | ${timeout} |\n`;
-            body += `| **Score** | **${score}%** |\n\n`;
-
-            if (parseInt(missed) > 0) {
-              body += '> Some mutations survived. Consider adding tests for the affected code paths.\n';
-              body += '<details><summary>Missed mutants</summary>\n\n```\n';
-              const fs = require('fs');
-              if (fs.existsSync('mutants.out/missed.txt')) {
-                body += fs.readFileSync('mutants.out/missed.txt', 'utf-8').substring(0, 3000);
-              }
-              body += '\n```\n</details>\n';
-            } else {
-              body += 'All mutations were caught by tests.\n';
-            }
+            const fs = require('fs');
+            // The comment body is rendered by scripts/ci/parse_mutation_results.py,
+            // which never claims a passing score for a failed/no-baseline run.
+            const body = fs.existsSync('mutation-comment.md')
+              ? fs.readFileSync('mutation-comment.md', 'utf-8')
+              : '## Mutation Testing Results\n\nResult parsing produced no report; see the job log.\n';
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -220,15 +191,31 @@ jobs:
         if: steps.changed.outputs.skip != 'true' && always()
         run: |
           {
-            echo "## Mutation Testing Results"
-            echo ""
-            echo "| Metric | Value |"
-            echo "|--------|-------|"
-            echo "| Caught | ${{ steps.results.outputs.caught }} |"
-            echo "| Missed | ${{ steps.results.outputs.missed }} |"
-            echo "| Timeout | ${{ steps.results.outputs.timeout }} |"
-            echo "| **Score** | **${{ steps.results.outputs.score }}%** |"
+            if [ -f mutation-comment.md ]; then
+              cat mutation-comment.md
+            else
+              echo "## Mutation Testing Results"
+              echo ""
+              echo "Result parsing produced no report; see the job log."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # A failed baseline, an error, a timeout, zero mutants or missing results
+      # must fail the check. This preserves the failure instead of publishing a
+      # blank "All mutations were caught" 100%-style pass. Real "missed" mutants
+      # are reported (not hidden) and still fail via cargo-mutants' own exit code.
+      - name: Gate on valid mutation results
+        if: steps.changed.outputs.skip != 'true' && always()
+        env:
+          MUTATION_STATUS: ${{ steps.results.outputs.status }}
+          MUTATION_SUMMARY: ${{ steps.results.outputs.summary }}
+        run: |
+          echo "status=$MUTATION_STATUS"
+          echo "summary=$MUTATION_SUMMARY"
+          case "$MUTATION_STATUS" in
+            pass|missed) echo "Valid mutation result: $MUTATION_STATUS (see comment)" ;;
+            *) echo "::error::No valid mutation result ($MUTATION_STATUS): $MUTATION_SUMMARY"; exit 1 ;;
+          esac
 
       - name: Upload mutation results
         if: always()
