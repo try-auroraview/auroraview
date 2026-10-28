@@ -91,3 +91,59 @@ Core 原有的 `BlenderDispatcherBackend`、公开导入路径和自动宿主检
 可见 HTML 渲染、JS/Python RPC、多窗口、关闭后重建、卸载和退出，需要针对明确的
 Blender、操作系统和 Core 组合单独测试。当前证据与待完成项请查看插件的
 [验证记录](https://github.com/try-auroraview/auroraview-blender/blob/main/docs/validation.md)。
+
+## 已验证的测试矩阵（GH-530）
+
+自动化回归测试在真实的后台（无界面）Blender 进程中运行，入口为
+`vx just test-blender-host`。DCC 工作流（`.github/workflows/dcc-integration.yml`）
+构建 `abi3-py38` wheel，并在宿主自带的解释器中测试以下组合：
+
+| Blender | 内置 Python | 操作系统 | CI 运行器 | 覆盖范围 |
+| --- | --- | --- | --- | --- |
+| 3.6.21 | 3.10 | Linux x64 | `ubuntu-latest` | 无界面导入 + 宿主检查 |
+| 5.2.1 | 3.13 | Linux x64 | `ubuntu-latest` | 无界面导入 + 宿主检查 |
+
+`cp38-abi3` wheel 向前兼容 Blender 的 Python 3.13，无需按 ABI 重新构建。
+无界面测试套件（`tests/python/integration/test_blender_integration.py`）断言
+Core 可导入、`WebView` 可在**不显示原生窗口**的情况下创建和关闭、临时 operator
+可在宿主上注册，以及 DCC 自动检测能识别 Blender。`scripts/ci/run_blender_tests.py`
+遇到任何 skip 都会让任务失败，并在 CI 日志中打印精确的 Blender、Python、操作系统
+和 AuroraView 版本。
+
+### 本地无界面验证（Windows x64，2026-10-28）
+
+在合法下载的官方 Blender 5.2.1 LTS（Windows-11-10.0.26100-SP0，内置 Python
+3.13.13）上手动运行，确认 `cp38-abi3` wheel 可在 Blender 进程内安装、导入并通过
+无界面宿主测试套件：`collected=4, passed=4, skipped=0`（Core 导入、`WebView`
+创建/关闭、operator 注册、DCC 检测）。复现方式：
+
+```powershell
+vx just prepare-blender-test-site .\dist\auroraview-...-cp38-abi3-win_amd64.whl .\.blender-test-site 3.13
+vx just test-blender-host "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" .\.blender-test-site
+```
+
+这只是无界面导入/宿主证据，属于手动记录而非自动化 CI 车道，不能证明任何可见窗口
+或 bridge 行为。
+
+保留 5.2.x 基线的同时跟踪最新稳定版：在 `dcc-integration.yml` 中新增一条矩阵
+记录，填写该版本的下载地址和内置 Python 版本；在商定新基线之前不要替换 5.2.x
+那一行。`prepare-blender-test-site` 必须使用该内置 Python 版本，以便为对应解释器
+解析 `abi3` wheel。
+
+### 尚待完成的原生验收（GH-530）
+
+上述 CI 矩阵**仅覆盖无界面导入**，不证明以下任一项。它们需要在自有的交互式
+Windows x64 Blender 会话中，配合兼容的 Core 构建（参见
+[主线程 RPC/生命周期契约](https://github.com/try-auroraview/auroraview/pull/497)）
+和可复现步骤来验证：
+
+- Windows x64 的交互式验收和自动化 Windows CI 车道——上述无界面导入检查已在
+  Windows x64 上手动运行，但尚未进入 CI，也没有交互式原生窗口的验证记录。
+- 可见的原生 WebView 窗口能显示 HTML 并关闭，不崩溃、不阻塞 Blender。
+- JavaScript 调用绑定的 Python API 并收到返回值，以及 Python 发出的事件到达 JavaScript。
+- 绑定 API 调用在 Blender 主线程读取或更新 `bpy` 并产生预期的场景结果。
+- 保存/关闭生命周期、多窗口、关闭后重建、卸载和退出清理。
+- macOS 与 Linux 上的交互式验证。
+
+不要依靠文档或被跳过的测试来宣称支持这些流程；每一项都需要针对明确的
+Blender、操作系统和 Core 组合通过交互式验证记录。
