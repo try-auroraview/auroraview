@@ -131,6 +131,7 @@ jobs:
           fi
 
       - name: Run incremental mutation testing
+        id: mutants
         if: steps.changed.outputs.skip != 'true'
         run: |
           # Without -p, cargo-mutants applies the args to every examined package;
@@ -142,7 +143,13 @@ jobs:
           fi
           cargo mutants --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml "${feature_args[@]}" 2>&1 | tee mutants-output.txt
           exit_code=${PIPESTATUS[0]}
-          echo "exit_code=$exit_code" >> $GITHUB_ENV
+          # Expose the real exit code as a step output. On cancellation the step
+          # is killed before this line, so the output stays empty and the parse
+          # step also receives outcome=cancelled / job.status=cancelled. Do NOT
+          # `exit "$exit_code"` here: that would flip a completed `missed` run
+          # (exit 2) into a failed step and change the existing quality gate.
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$exit_code" >> "$GITHUB_ENV"
 
       # Parse via a unit-tested helper instead of inline `grep -c ... || echo 0`.
       # The old pattern returned "0\n0" on empty files (grep -c prints 0 AND
@@ -151,10 +158,21 @@ jobs:
       - name: Parse mutation results
         if: steps.changed.outputs.skip != 'true' && always()
         id: results
+        env:
+          # Bind the runner's authoritative signals directly. A cancelled step
+          # never reaches `echo "exit_code=..."`, so relying on $GITHUB_ENV alone
+          # used to yield an empty exit code that the old parser accepted as OK.
+          MUTANTS_EXIT_CODE: ${{ steps.mutants.outputs.exit_code }}
+          MUTANTS_STEP_OUTCOME: ${{ steps.mutants.outcome }}
+          MUTANTS_STEP_CONCLUSION: ${{ steps.mutants.conclusion }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           python3 scripts/ci/parse_mutation_results.py \
             --mutants-out mutants.out \
-            --exit-code "${exit_code:-}" \
+            --exit-code "$MUTANTS_EXIT_CODE" \
+            --step-outcome "$MUTANTS_STEP_OUTCOME" \
+            --step-conclusion "$MUTANTS_STEP_CONCLUSION" \
+            --job-status "$JOB_STATUS" \
             --output "$GITHUB_OUTPUT" \
             --comment-file mutation-comment.md
 
@@ -210,10 +228,14 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # A failed baseline, an error, a timeout, zero mutants or missing results
-      # must fail the check. This preserves the failure instead of publishing a
-      # blank "All mutations were caught" 100%-style pass. Real "missed" mutants
-      # are reported (not hidden) and still fail via cargo-mutants' own exit code.
+      # A failed baseline, an error, a timeout, an incomplete (cancelled or
+      # partial) run, zero mutants or missing results must fail the check. This
+      # preserves the failure instead of publishing a false "all caught" pass.
+      # A COMPLETED run with missed mutants is a valid, honestly scored result:
+      # pass|missed means "usable report", NOT "quality passed". The repository
+      # has no numeric mutation-score threshold; the earlier claim that missed
+      # mutants fail via cargo-mutants' own exit code was inaccurate -- base
+      # 8edc987 piped to tee, captured PIPESTATUS and never re-raised it.
       - name: Gate on valid mutation results
         if: steps.changed.outputs.skip != 'true' && always()
         env:

@@ -18,6 +18,17 @@ emits single-line, integer-valued GitHub Actions outputs. It never reports a
 passing score for an invalid / no-baseline / zero-mutant run; those statuses
 are surfaced so the job fails honestly instead of appearing green.
 
+Run 40773589794 exposed a second false-pass path: the 30-minute job cap
+cancelled the cargo-mutants step mid-run, so ``exit_code`` was never persisted
+and ``outcomes.json`` held only 129 of 200 planned mutants with
+``end_time: null``. The old parser treated the empty exit code as OK and
+reported ``status=missed score=14`` as a *valid* result. The workflow now also
+passes the real step outcome/conclusion and job status; together with the
+artifact's own completion markers (``end_time`` and the ``mutants.json``
+manifest) a cancelled/incomplete/partial run is reported as ``incomplete``
+with ``score=N/A`` and is rejected by the gate. Genuine ``missed`` results are
+still reported and scored, never hidden.
+
 Exit status is always 0 (outputs must be written even for invalid results); a
 dedicated workflow step fails the job based on the ``status`` output.
 """
@@ -31,7 +42,9 @@ from pathlib import Path
 
 # cargo-mutants exit codes. 0 = all caught, 2 = missed mutants found,
 # 3 = timeout, 4 = unmutated (clean tree) baseline failed, 1 = usage/other.
-_KNOWN_OK_CODES = {"", "0", "2"}
+# An EMPTY code is NOT ok: it means the cargo-mutants step was cancelled
+# before it could persist its exit code.
+_KNOWN_OK_CODES = {"0", "2"}
 _STATUS_BY_CODE = {"1": "error", "3": "timeout", "4": "baseline_failed"}
 
 _SUMMARY = {
@@ -50,11 +63,25 @@ _SUMMARY = {
     ),
     "error": "cargo-mutants exited abnormally ({code}); results are incomplete. NOT a passing result.",
     "timeout": "cargo-mutants timed out; results are incomplete. NOT a passing result.",
+    "incomplete": (
+        "The mutation run did not finish: the mutants step or job was cancelled/"
+        "timed out, its exit code is missing, or only part of the planned mutants "
+        "was evaluated. The result set is incomplete. This is NOT a passing result."
+    ),
 }
 
 # Statuses that represent a genuine, usable mutation-testing result. Anything
 # else must fail the job rather than being hidden behind a green check.
 _VALID_STATUSES = frozenset({"pass", "missed"})
+
+# GitHub Actions outcome/conclusion/status values that prove the cargo-mutants
+# step was interrupted rather than finishing. NOTE: ``failure`` is deliberately
+# NOT here -- cargo-mutants exits 2 (missed mutants) as a *completed* run, and
+# its step legitimately has outcome=failure. Only cancellation/skip means the
+# result set is partial.
+_INTERRUPTED_STATUSES = frozenset(
+    {"cancelled", "timed_out", "skipped", "action_required", "stale", "neutral"}
+)
 
 
 def count_nonempty_lines(path: Path) -> int:
@@ -80,6 +107,49 @@ def _load_outcomes(mutants_out: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _planned_mutants(mutants_out: Path) -> int | None:
+    """Number of mutants cargo-mutants planned to test.
+
+    ``mutants.json`` is written before the run starts and lists every planned
+    mutant. It is the authoritative denominator for completeness; a partial
+    ``outcomes.json`` cannot be mistaken for a finished run when this file is
+    present. Returns None when the manifest is absent (older/synthetic runs).
+    """
+    try:
+        data = json.loads((mutants_out / "mutants.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return len(data) if isinstance(data, list) else None
+
+
+def _recorded_mutants(outcomes: dict | None) -> int | None:
+    """Count mutant scenarios actually present in outcomes.json.
+
+    The ``outcomes`` list also holds one ``Baseline`` entry, which is not a
+    mutant. Returns None when the list is unusable.
+    """
+    if not outcomes:
+        return None
+    entries = outcomes.get("outcomes")
+    if not isinstance(entries, list):
+        return None
+    return sum(
+        1 for entry in entries if isinstance(entry, dict) and entry.get("scenario") != "Baseline"
+    )
+
+
+def _run_interrupted(*signals: str) -> bool:
+    """True when a GitHub Actions outcome/conclusion/status shows interruption.
+
+    Only ``cancelled`` / ``timed_out`` / ``skipped`` (and their rarer variants)
+    count. A ``failure`` step is NOT evidence of interruption: cargo-mutants
+    exits 2 for a completed run with missed mutants, and its step fails while
+    still having produced a full, valid result set. Empty/unset values and
+    ``success`` are ignored so artifact-only callers still work.
+    """
+    return any((s or "").strip().lower() in _INTERRUPTED_STATUSES for s in signals)
+
+
 def _baseline_failed(outcomes: dict | None) -> bool:
     """True when outcomes.json records a failed 'Baseline' scenario."""
     if not outcomes:
@@ -99,15 +169,29 @@ def _as_int(value: object) -> int:
         return 0
 
 
-def derive(mutants_out: Path, exit_code: str = "") -> dict[str, str]:
+def derive(
+    mutants_out: Path,
+    exit_code: str = "",
+    *,
+    step_outcome: str = "",
+    step_conclusion: str = "",
+    job_status: str = "",
+) -> dict[str, str]:
     """Compute the GitHub Actions outputs for a mutation run.
 
     The result always contains: caught, missed, timeout, unviable, total,
     score, status, summary. ``score`` is a bare integer string for valid runs
-    and ``"N/A"`` for any invalid/no-baseline/no-mutant result.
+    and ``"N/A"`` for any invalid/no-baseline/no-mutant/incomplete result.
+
+    Completeness is established from the artifact itself (``end_time`` and the
+    ``mutants.json`` manifest) AND from the workflow-supplied step/job status,
+    so a partial run cannot be reported as a complete ``missed``/``pass``
+    result even if one signal is missing.
     """
     code = (exit_code or "").strip()
     outcomes = _load_outcomes(mutants_out) if mutants_out.is_dir() else None
+    planned = _planned_mutants(mutants_out) if mutants_out.is_dir() else None
+    recorded = _recorded_mutants(outcomes)
 
     if outcomes is not None:
         caught = _as_int(outcomes.get("caught"))
@@ -124,12 +208,31 @@ def derive(mutants_out: Path, exit_code: str = "") -> dict[str, str]:
             unviable = count_nonempty_lines(mutants_out / "unviable.txt")
             total = caught + missed + timeout + unviable
 
+    # A cancelled/partial run can never be reported as a complete, scored
+    # result. Four independent signals, any one of which is sufficient:
+    #  1. the workflow says the step/job did not finish successfully;
+    #  2. outcomes.json still has end_time == null (written mid-run);
+    #  3. fewer mutant scenarios recorded than mutants.json planned;
+    #  4. no exit code was persisted (the step never reached its last line).
+    incomplete = _run_interrupted(step_outcome, step_conclusion, job_status)
+    if outcomes is not None and "end_time" in outcomes and outcomes.get("end_time") is None:
+        incomplete = True
+    if planned is not None and recorded is not None and recorded < planned:
+        incomplete = True
+    if not code:
+        incomplete = True
+
     # Determine status, most severe first. An invalid baseline / no results can
     # never be reported as 100% pass, regardless of what the counters say.
     if not mutants_out.is_dir():
         status = "no_results"
     elif _baseline_failed(outcomes) or code == "4":
         status = "baseline_failed"
+    elif incomplete:
+        # Proven interruption/truncation wins over a generic error code: a
+        # killed process may report e.g. 137, but the result set is still only
+        # partial and must never be published as a scored, valid result.
+        status = "incomplete"
     elif code in _STATUS_BY_CODE:
         status = _STATUS_BY_CODE[code]
     elif code and code not in _KNOWN_OK_CODES:
@@ -220,7 +323,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--exit-code",
         default="",
-        help="cargo-mutants process exit code (from $GITHUB_ENV)",
+        help="cargo-mutants process exit code (${{ steps.mutants.outputs.exit_code }})",
+    )
+    parser.add_argument(
+        "--step-outcome",
+        default="",
+        help="${{ steps.mutants.outcome }} of the cargo-mutants step",
+    )
+    parser.add_argument(
+        "--step-conclusion",
+        default="",
+        help="${{ steps.mutants.conclusion }} of the cargo-mutants step",
+    )
+    parser.add_argument(
+        "--job-status",
+        default="",
+        help="${{ job.status }} while parsing the results",
     )
     parser.add_argument(
         "--output",
@@ -236,7 +354,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    values = derive(args.mutants_out, args.exit_code)
+    values = derive(
+        args.mutants_out,
+        args.exit_code,
+        step_outcome=args.step_outcome,
+        step_conclusion=args.step_conclusion,
+        job_status=args.job_status,
+    )
     write_outputs(values, args.output)
     if args.comment_file is not None:
         missed_text = ""
