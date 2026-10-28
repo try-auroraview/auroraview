@@ -594,7 +594,7 @@ hakari-check:
     vx cargo hakari generate --diff
     vx cargo hakari manage-deps --dry-run
 
-# Verify the crates.io packaging stack without publishing or network access.
+# Verify the crates.io packaging stack without publishing.
 publish-preflight: hakari-check
     vx python -m unittest discover -s tests/python/unit -p test_publish_preflight.py -v
     vx cargo package -p auroraview-contract --allow-dirty --no-verify
