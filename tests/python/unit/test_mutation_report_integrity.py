@@ -194,6 +194,36 @@ def test_cancelled_artifact_is_now_incomplete_and_rejected(tmp_path):
     assert "All 129 mutants were caught" not in body
 
 
+def test_60_minute_cancellation_at_195_of_200_stays_incomplete(tmp_path):
+    """Replay run 40790621664; more budget must not weaken report validity."""
+    parser = load_parser()
+    artifact = write_complete_artifact(
+        tmp_path / "mutants.out", total=200, caught=28, missed=169, unviable=3
+    )
+    outcomes = artifact / "outcomes.json"
+    data = json.loads(outcomes.read_text(encoding="utf-8"))
+    data.update(
+        total_mutants=195,
+        missed=164,
+        end_time=None,
+        outcomes=[{"scenario": "Baseline", "summary": "Success"}] + _mutant_entries(195),
+    )
+    outcomes.write_text(json.dumps(data), encoding="utf-8")
+    values = parser.derive(
+        artifact,
+        exit_code="",
+        step_outcome="cancelled",
+        step_conclusion="cancelled",
+        job_status="cancelled",
+    )
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["total"] == "195"
+    assert values["caught"] == "28"
+    assert values["missed"] == "164"
+    assert values["status"] not in parser._VALID_STATUSES
+
+
 def test_empty_exit_code_is_no_longer_a_known_ok_code():
     parser = load_parser()
     assert "" not in parser._KNOWN_OK_CODES
@@ -500,7 +530,7 @@ def test_gate_still_accepts_only_pass_or_missed():
     assert "::error::No valid mutation result" in text
 
 
-def test_incremental_timeout_not_expanded_beyond_60_minutes():
+def test_incremental_budget_covers_observed_full_run_without_truncation():
     text = _WORKFLOW.read_text(encoding="utf-8")
     match = re.search(
         r"^  incremental:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:|\Z)",
@@ -509,4 +539,10 @@ def test_incremental_timeout_not_expanded_beyond_60_minutes():
     )
     assert match
     timeout = re.search(r"timeout-minutes:\s*(\d+)", match.group("body"))
-    assert timeout and int(timeout.group(1)) == 60
+    assert timeout and int(timeout.group(1)) == 90
+    # 200 mutants at the observed upper ~20s each, baseline 231s, plus
+    # 4 minutes setup and 15 minutes reporting/runner variance headroom.
+    required_seconds = 200 * 20 + 231 + 4 * 60 + 15 * 60
+    assert int(timeout.group(1)) * 60 >= required_seconds
+    assert "--mutant-limit" not in match.group("body")
+    assert "--baseline skip" not in match.group("body")

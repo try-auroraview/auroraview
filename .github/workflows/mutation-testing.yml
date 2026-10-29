@@ -60,11 +60,12 @@ jobs:
   incremental:
     name: Incremental Mutations
     runs-on: ubuntu-latest
-    # The examined src/ipc/** set yields ~200 mutants, each costing ~12s
-    # build + ~3s test, so a complete run needs roughly 50 minutes. The
-    # former 30-minute cap cancelled step 10 mid-run (129/200 mutants
-    # tested) and left the check cancelled despite a valid honest result.
-    timeout-minutes: 60
+    # Run 40790621664 reached only 195/200 planned mutants at the 60-minute
+    # job limit (baseline: 227s build + 4s test; later mutants: ~16-20s each).
+    # Budget 75 minutes for setup/baseline + 200 * 20s, then 15 minutes of
+    # runner variance/reporting headroom. Preserve the full examined set;
+    # cancellation/partial results still fail the completeness gate below.
+    timeout-minutes: 90
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
