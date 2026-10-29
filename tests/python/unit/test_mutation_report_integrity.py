@@ -483,13 +483,29 @@ def _parse_step_block(text: str) -> str:
 def test_workflow_binds_real_step_signals_to_parser():
     text = _WORKFLOW.read_text(encoding="utf-8")
     parse_step = _parse_step_block(text)
-    # The mutants step must be addressable via `steps.mutants`.
+    # The mutants step must still be addressable, and the shards must persist
+    # the authoritative runner contexts into their artifacts.
     assert re.search(r"- name: Run incremental mutation testing\n\s+id: mutants", text)
-    # Runner contexts are bound into env (avoids interpolating into shell).
+    context_step = re.search(
+        r"- name: Record shard context\n(?P<body>.*?)(?=\n      - name: |\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert context_step, "Record shard context step not found"
+    for expression in (
+        "${{ steps.mutants.outputs.exit_code }}",
+        "${{ steps.mutants.outcome }}",
+        "${{ steps.mutants.conclusion }}",
+        "${{ job.status }}",
+    ):
+        assert expression in context_step.group("body"), f"shard context must bind {expression}"
+    assert "SHARD_RESULT: ${{ needs.incremental.result }}" in text
+    # The report job's aggregate outputs (derived from those contexts) are
+    # bound into env, avoiding interpolation into shell.
     for env_name, expression in (
-        ("MUTANTS_EXIT_CODE", "${{ steps.mutants.outputs.exit_code }}"),
-        ("MUTANTS_STEP_OUTCOME", "${{ steps.mutants.outcome }}"),
-        ("MUTANTS_STEP_CONCLUSION", "${{ steps.mutants.conclusion }}"),
+        ("MUTANTS_EXIT_CODE", "${{ steps.aggregate.outputs.exit_code }}"),
+        ("MUTANTS_STEP_OUTCOME", "${{ steps.aggregate.outputs.step_outcome }}"),
+        ("MUTANTS_STEP_CONCLUSION", "${{ steps.aggregate.outputs.step_conclusion }}"),
         ("JOB_STATUS", "${{ job.status }}"),
     ):
         assert re.search(rf"{env_name}:\s*{re.escape(expression)}", parse_step), (
@@ -531,6 +547,14 @@ def test_gate_still_accepts_only_pass_or_missed():
 
 
 def test_incremental_budget_covers_observed_full_run_without_truncation():
+    """The 60-minute cap must cover ONE shard's half of the observed full run.
+
+    Raising timeout-minutes to 90 for a single job would hide the real problem:
+    runner variance (13.4s -> 17.0s per mutant) simply moves the cancellation
+    point. Instead the full 200-mutant set is split across two deterministic
+    shards, so each leg only runs ~100 mutants. Keep the original intent of
+    this budget check but model the per-leg cost.
+    """
     text = _WORKFLOW.read_text(encoding="utf-8")
     match = re.search(
         r"^  incremental:\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:|\Z)",
@@ -538,11 +562,13 @@ def test_incremental_budget_covers_observed_full_run_without_truncation():
         re.MULTILINE | re.DOTALL,
     )
     assert match
-    timeout = re.search(r"timeout-minutes:\s*(\d+)", match.group("body"))
-    assert timeout and int(timeout.group(1)) == 90
-    # 200 mutants at the observed upper ~20s each, baseline 231s, plus
+    body = match.group("body")
+    timeout = re.search(r"timeout-minutes:\s*(\d+)", body)
+    assert timeout and int(timeout.group(1)) == 60, "must not raise the timeout again"
+    assert re.search(r"--shard \$\{\{ matrix\.shard \}\}/2", body)
+    # 100 mutants per leg at the observed upper ~20s each, baseline 231s,
     # 4 minutes setup and 15 minutes reporting/runner variance headroom.
-    required_seconds = 200 * 20 + 231 + 4 * 60 + 15 * 60
-    assert int(timeout.group(1)) * 60 >= required_seconds
-    assert "--mutant-limit" not in match.group("body")
-    assert "--baseline skip" not in match.group("body")
+    per_leg_seconds = 100 * 20 + 231 + 4 * 60 + 15 * 60
+    assert int(timeout.group(1)) * 60 >= per_leg_seconds
+    assert "--mutant-limit" not in body
+    assert "--baseline skip" not in body

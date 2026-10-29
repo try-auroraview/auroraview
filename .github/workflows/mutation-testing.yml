@@ -1,7 +1,7 @@
 name: Mutation Testing
 
 # Runs cargo-mutants to detect undertested code.
-# - On PRs: incremental mode (only mutate changed files)
+# - On PRs: the full planned mutant set, split across 2 deterministic shards
 # - Weekly: full scan on core crates
 # - Manual: configurable via workflow_dispatch
 
@@ -56,17 +56,31 @@ env:
 jobs:
   # ===========================================================================
   # Incremental mutation testing (PR only - test mutations in changed files)
+  #
+  # `.cargo/mutants.toml` examine_globs covers crates/** + src/ipc/**, so the
+  # `--file` args for the changed .rs files still yield ~200 mutants: this job
+  # is effectively a full round on every PR. Measured cost is 13-20s per
+  # mutant, i.e. 48-57 minutes plus a 154-227s baseline. A single 60-minute
+  # job is not robust: run 40778843830 finished 200/200 in 48m34s, but run
+  # 40790621664 (same inputs) hit the cap at 195/200. Keep the full 200 and
+  # split it into two deterministic round-robin shards (~100 mutants each,
+  # ~30 minutes per leg) instead of raising timeout-minutes or dropping work.
   # ===========================================================================
   incremental:
-    name: Incremental Mutations
+    name: Incremental Mutations (shard ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     # Run 40790621664 reached only 195/200 planned mutants at the 60-minute
     # job limit (baseline: 227s build + 4s test; later mutants: ~16-20s each).
-    # Budget 75 minutes for setup/baseline + 200 * 20s, then 15 minutes of
-    # runner variance/reporting headroom. Preserve the full examined set;
-    # cancellation/partial results still fail the completeness gate below.
-    timeout-minutes: 90
+    # Do NOT raise this cap: the full 200-mutant set is split across two
+    # round-robin shards, so each leg runs ~100 mutants. Per-leg budget:
+    # 100 * 20s + 231s baseline + 4m setup + 15m variance headroom = ~56m.
+    # Cancellation/partial results still fail the completeness gate below.
+    timeout-minutes: 60
     if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false # collect every shard's mutants even if one fails
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -105,8 +119,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-mutants-
+          # Scope per shard so the two legs never race to save the same key.
+          key: ${{ runner.os }}-cargo-mutants-shard${{ matrix.shard }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-mutants-shard${{ matrix.shard }}-
 
       - name: Install cargo-mutants and cargo-nextest
         uses: taiki-e/install-action@v2
@@ -142,30 +157,93 @@ jobs:
               | jq -e '[.packages[] | .features | has("test-helpers")] | all' >/dev/null; then
             feature_args=(--features "test-helpers")
           fi
-          cargo mutants --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml "${feature_args[@]}" 2>&1 | tee mutants-output.txt
+          # Two deterministic shards keep ALL 200 planned mutants. Round-robin
+          # matters: measured times are ~8s for the first 50 mutants and ~20s
+          # for the rest, so the default `slice` algorithm would unbalance the
+          # legs (23.5 vs 32 minutes); round-robin gives ~28 minutes each.
+          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/2 --sharding round-robin --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml "${feature_args[@]}" 2>&1 | tee mutants-output.txt
           exit_code=${PIPESTATUS[0]}
           # Expose the real exit code as a step output. On cancellation the step
-          # is killed before this line, so the output stays empty and the parse
-          # step also receives outcome=cancelled / job.status=cancelled. Do NOT
-          # `exit "$exit_code"` here: that would flip a completed `missed` run
-          # (exit 2) into a failed step and change the existing quality gate.
+          # is killed before this line, so the output stays empty and the shard
+          # context also receives outcome=cancelled / job.status=cancelled. Do
+          # NOT `exit "$exit_code"` here: that would flip a completed `missed`
+          # run (exit 2) into a failed step and change the existing quality gate.
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
-          echo "exit_code=$exit_code" >> "$GITHUB_ENV"
+
+      - name: Record shard context
+        id: context
+        if: always()
+        env:
+          # Real runner contexts travel with the artifact so the aggregate job
+          # can judge completeness without trusting a counter alone.
+          SHARD_EXIT_CODE: ${{ steps.mutants.outputs.exit_code }}
+          MUTANTS_STEP_OUTCOME: ${{ steps.mutants.outcome }}
+          MUTANTS_STEP_CONCLUSION: ${{ steps.mutants.conclusion }}
+          JOB_STATUS: ${{ job.status }}
+          CHANGED_SKIP: ${{ steps.changed.outputs.skip }}
+        run: |
+          mkdir -p mutants.out
+          printf '{"shard":%s,"shards":2,"exit_code":"%s","step_outcome":"%s","step_conclusion":"%s","job_status":"%s","skip":"%s"}\n' \
+            "${{ matrix.shard }}" "$SHARD_EXIT_CODE" "$MUTANTS_STEP_OUTCOME" \
+            "$MUTANTS_STEP_CONCLUSION" "$JOB_STATUS" "$CHANGED_SKIP" \
+            > mutants.out/shard_meta.json
+
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: mutants.out/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ===========================================================================
+  # Aggregate the two shards into ONE honest, complete result set (PR only)
+  # ===========================================================================
+  report:
+    name: Mutation Report
+    runs-on: ubuntu-latest
+    needs: incremental
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download shard results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: mutation-shard-*
+          path: shards
+          merge-multiple: false
+
+      - name: Aggregate shard results
+        id: aggregate
+        if: always()
+        env:
+          # The matrix job's authoritative result. A cancelled/failed leg must
+          # never be aggregated into a scored "complete" report.
+          SHARD_RESULT: ${{ needs.incremental.result }}
+        run: |
+          python3 scripts/ci/aggregate_mutation_shards.py \
+            --shards-dir shards \
+            --output mutants.out \
+            --expect-shards 2 \
+            --shard-result "$SHARD_RESULT" \
+            --github-output "$GITHUB_OUTPUT"
 
       # Parse via a unit-tested helper instead of inline `grep -c ... || echo 0`.
       # The old pattern returned "0\n0" on empty files (grep -c prints 0 AND
       # exits 1), which crashed $((caught + missed)) under `bash -e`, and a
       # missing/empty result set was reported as score=100 "all caught".
       - name: Parse mutation results
-        if: steps.changed.outputs.skip != 'true' && always()
+        if: always() && steps.aggregate.outputs.skip != 'true'
         id: results
         env:
-          # Bind the runner's authoritative signals directly. A cancelled step
-          # never reaches `echo "exit_code=..."`, so relying on $GITHUB_ENV alone
-          # used to yield an empty exit code that the old parser accepted as OK.
-          MUTANTS_EXIT_CODE: ${{ steps.mutants.outputs.exit_code }}
-          MUTANTS_STEP_OUTCOME: ${{ steps.mutants.outcome }}
-          MUTANTS_STEP_CONCLUSION: ${{ steps.mutants.conclusion }}
+          # The aggregate step derives these from the shards' persisted runner
+          # contexts and the matrix result, so a cancelled/partial leg still
+          # reaches the parser as an authoritative interruption signal.
+          MUTANTS_EXIT_CODE: ${{ steps.aggregate.outputs.exit_code }}
+          MUTANTS_STEP_OUTCOME: ${{ steps.aggregate.outputs.step_outcome }}
+          MUTANTS_STEP_CONCLUSION: ${{ steps.aggregate.outputs.step_conclusion }}
           JOB_STATUS: ${{ job.status }}
         run: |
           python3 scripts/ci/parse_mutation_results.py \
@@ -178,7 +256,7 @@ jobs:
             --comment-file mutation-comment.md
 
       - name: Comment PR with mutation results
-        if: steps.changed.outputs.skip != 'true' && always() && github.event.pull_request.head.repo.full_name == github.repository
+        if: always() && steps.aggregate.outputs.skip != 'true' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         uses: actions/github-script@v9
         with:
@@ -217,7 +295,7 @@ jobs:
             }
 
       - name: Write mutation results to step summary
-        if: steps.changed.outputs.skip != 'true' && always()
+        if: always() && steps.aggregate.outputs.skip != 'true'
         run: |
           {
             if [ -f mutation-comment.md ]; then
@@ -238,7 +316,7 @@ jobs:
       # mutants fail via cargo-mutants' own exit code was inaccurate -- base
       # 8edc987 piped to tee, captured PIPESTATUS and never re-raised it.
       - name: Gate on valid mutation results
-        if: steps.changed.outputs.skip != 'true' && always()
+        if: always() && steps.aggregate.outputs.skip != 'true'
         env:
           MUTATION_STATUS: ${{ steps.results.outputs.status }}
           MUTATION_SUMMARY: ${{ steps.results.outputs.summary }}
@@ -252,7 +330,7 @@ jobs:
 
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-results-incremental
           path: mutants.out/
