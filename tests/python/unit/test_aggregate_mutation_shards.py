@@ -387,6 +387,64 @@ def test_all_shards_skipped_sets_skip_output_without_a_fake_result(tmp_path):
     assert outputs["skip"] == "true"
 
 
+@pytest.mark.parametrize("matrix_result", ["success", "failure", "cancelled"])
+def test_one_skip_artifact_cannot_hide_a_missing_shard(tmp_path, matrix_result):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", skip_all=True)
+    missing = shards / "mutation-shard-1"
+    (missing / "shard_meta.json").unlink()
+    missing.rmdir()
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["skip"] is False
+    assert values["_summary"]["complete"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+@pytest.mark.parametrize("matrix_result", ["", "failure", "cancelled", "timed_out", "skipped"])
+def test_skip_artifacts_cannot_override_an_unsuccessful_matrix(tmp_path, matrix_result):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", skip_all=True)
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("shard", 0),  # duplicate index
+        ("shard", 2),  # unexpected index
+        ("shards", 3),
+        ("shards", None),
+        ("job_status", "failure"),
+        ("job_status", "cancelled"),
+        ("step_outcome", "cancelled"),
+        ("step_conclusion", "failure"),
+        ("step_outcome", ""),
+    ],
+)
+def test_skip_requires_complete_valid_runner_metadata(tmp_path, field, value):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", skip_all=True)
+    path = shards / "mutation-shard-1" / "shard_meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta[field] = value
+    path.write_text(json.dumps(meta), encoding="utf-8")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
 # --- The workflow must really wire all of this ------------------------------
 
 

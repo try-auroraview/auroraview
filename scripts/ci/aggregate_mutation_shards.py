@@ -111,7 +111,23 @@ def aggregate(
         problems.append(f"missing shard indices {sorted(missing_indices)}")
 
     skips = [str(meta.get("skip", "")).strip().lower() for _, meta in legs.values()]
-    all_skipped = bool(skips) and all(skip == "true" for skip in skips)
+    # Skipping the parser/gate is safe only when EVERY expected leg confirms
+    # an intentional no-change skip. One surviving skip artifact must not hide
+    # a missing, malformed, failed or cancelled sibling.
+    all_skipped = (
+        bool(skips)
+        and not problems
+        and set(legs) == expected_indices
+        and shard_result == "success"
+        and all(skip == "true" for skip in skips)
+        and all(
+            meta.get("shards") in (expect_shards, str(expect_shards))
+            and meta.get("job_status") == "success"
+            and meta.get("step_outcome") == "skipped"
+            and meta.get("step_conclusion") == "skipped"
+            for _, meta in legs.values()
+        )
+    )
 
     planned: dict[str, dict] = {}
     recorded: dict[str, dict] = {}
