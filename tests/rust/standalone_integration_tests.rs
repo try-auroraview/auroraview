@@ -41,6 +41,21 @@ fn standalone_config_custom(#[case] title: &str, #[case] width: u32, #[case] hei
     assert_eq!(config.height, height);
 }
 
+/// GH-528: a custom window icon path is carried on WebViewConfig and the
+/// default keeps no custom icon (so the default AuroraView icon is used).
+#[rstest]
+fn standalone_config_window_icon() {
+    use std::path::PathBuf;
+
+    assert!(WebViewConfig::default().icon.is_none());
+
+    let config = WebViewConfig {
+        icon: Some(PathBuf::from("assets/my-icon.png")),
+        ..Default::default()
+    };
+    assert_eq!(config.icon, Some(PathBuf::from("assets/my-icon.png")));
+}
+
 /// Test loading screen HTML generation
 #[rstest]
 fn loading_html_generation() {

@@ -141,6 +141,8 @@ jobs:
               - 'scripts/ci/test_gallery_ci.py'
               - 'scripts/ci/stage_gallery_wheel.py'
               - 'scripts/ci/test_gallery_lifecycle.ps1'
+              - 'scripts/ci/check_wheel_native_import.py'
+              - 'scripts/ci/test_check_wheel_native_import.py'
               - 'tests/test_gallery_cdp.py'
               - 'scripts/audit_unsafe.py'
               - 'scripts/unsafe_allowlist.txt'
@@ -369,6 +371,13 @@ jobs:
         # skip exactly that case.
         if: needs.path-filter.outputs.needs_rust_checks == 'true' || needs.path-filter.outputs.needs_python_tests == 'true'
         run: vx python scripts/ci/check_contract_capability_parity.py
+
+      # Offline red/green tests for the GH-528 wheel-lane preflight guard. This
+      # proves the guard fails loudly on a missing _core import / skipped icon
+      # module and passes on a healthy lane, without needing a built wheel.
+      - name: Check wheel native-import guard offline contract (GH-528)
+        if: needs.path-filter.outputs.needs_rust_checks == 'true' || needs.path-filter.outputs.needs_python_tests == 'true'
+        run: vx python -m unittest discover -s scripts/ci -p test_check_wheel_native_import.py -v
 
       - name: Install system dependencies
         if: needs.path-filter.outputs.needs_rust_checks == 'true'
@@ -811,6 +820,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libxkbcommon0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
+          # The prebuilt ABI3 wheel's `auroraview._core` links libxdo.so.3
+          # (active-win-pos-rs) and libwebkit2gtk-4.1.so.0 / GTK (wry, tao).
+          # Without these runtime libs, `import auroraview._core` fails on
+          # Linux and pytest.importorskip either hard-errors (pytest 9) or
+          # silently skips (pytest 8), so the GH-528 icon checks never run.
+          # Same minimal runtime set used by dcc-integration.yml:117.
+          sudo apt-get install -y libwebkit2gtk-4.1-0 libxdo3
 
       - name: Install wheel and test dependencies
         shell: bash
@@ -830,6 +846,15 @@ jobs:
         shell: bash
         run: |
           python -c "import auroraview; print(f'AuroraView {auroraview.__version__} on Python ${{ matrix.python-version }}')"
+
+      # GH-528 regression guard: `import auroraview` above is swallowed by the
+      # package's try/except fallback, so it cannot prove the native extension
+      # loaded. This step hard-imports `auroraview._core` and confirms the icon
+      # checks are collected, so a missing Linux runtime lib can never again
+      # turn a wheel lane into a silent skip or an opaque collection error.
+      - name: Verify native import and icon checks (GH-528)
+        shell: bash
+        run: python scripts/ci/check_wheel_native_import.py
 
       - name: Run tests
         shell: bash

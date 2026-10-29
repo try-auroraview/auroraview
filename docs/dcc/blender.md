@@ -107,3 +107,71 @@ windows, close/reopen and unload/exit require separate tests against a declared
 Blender/OS/Core combination. Consult the adapter's
 [validation record](https://github.com/try-auroraview/auroraview-blender/blob/main/docs/validation.md)
 for current evidence and remaining gates.
+
+## Verified test matrix (GH-530)
+
+Automated regression runs inside a real, background (headless) Blender process
+via `vx just test-blender-host`. The DCC workflow
+(`.github/workflows/dcc-integration.yml`) builds an `abi3-py38` wheel and tests
+these combinations inside the host's bundled interpreter:
+
+| Blender | Bundled Python | OS | CI runner | Scope |
+| --- | --- | --- | --- | --- |
+| 3.6.21 | 3.10 | Linux x64 | `ubuntu-latest` | headless import + host checks |
+| 5.2.1 | 3.13 | Linux x64 | `ubuntu-latest` | headless import + host checks |
+
+The `cp38-abi3` wheel is forward-compatible with Blender's Python 3.13 and
+needs no ABI-specific rebuild. The headless suite
+(`tests/python/integration/test_blender_integration.py`) asserts that Core
+imports, that `WebView` can be constructed and closed **without showing a
+native window**, that a temporary operator registers on the host, and that DCC
+auto-detection identifies Blender. `scripts/ci/run_blender_tests.py` fails the
+job on any skip and prints the exact Blender, Python, OS and AuroraView
+versions into the CI log.
+
+### Local headless validation (Windows x64, 2026-10-28)
+
+A manual run against a legally downloaded official Blender 5.2.1 LTS
+(Windows-11-10.0.26100-SP0, bundled Python 3.13.13) confirmed that the
+`cp38-abi3` wheel installs, imports and passes the headless host suite in the
+Blender process with `collected=4, passed=4, skipped=0` (Core import,
+`WebView` construct/close, operator registration, DCC detection). Reproduce by
+installing the wheel into an isolated site and running inside Blender:
+
+```powershell
+vx just prepare-blender-test-site .\dist\auroraview-...-cp38-abi3-win_amd64.whl .\.blender-test-site 3.13
+vx just test-blender-host "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" .\.blender-test-site
+```
+
+This is headless import/host evidence — a manual record, not an automated CI
+lane — and does not certify any visible-window or bridge behavior.
+
+To keep the 5.2.x baseline while tracking the latest stable release, add a new
+matrix entry in `dcc-integration.yml` with the release's download URL and its
+bundled Python version; do not replace the 5.2.x row until a newer baseline is
+agreed. `prepare-blender-test-site` must use that bundled Python version so the
+`abi3` wheel is resolved for the matching interpreter.
+
+### Native acceptance still outstanding (GH-530)
+
+The CI matrix above is **headless import coverage only**. It does not establish
+any of the following, which require an owned interactive Blender session on
+Windows x64 with a compatible Core build (see the
+[owner-thread RPC/lifecycle contract](https://github.com/try-auroraview/auroraview/pull/497))
+and recorded reproduction steps:
+
+- Windows x64 interactive acceptance and an automated Windows CI lane — the
+  headless import check above was run manually on Windows x64 but is not in
+  CI, and no interactive native-window validation has been recorded.
+- A visible native WebView window that displays HTML and closes without
+  crashing or blocking Blender.
+- JavaScript calling a bound Python API and receiving the result, and a
+  Python-emitted event reaching JavaScript.
+- A bound API call that reads or updates `bpy` on Blender's main thread and
+  produces the expected scene result.
+- Save/close lifecycle, multiple windows, close/reopen and unload/exit cleanup.
+- Interactive validation on macOS and Linux.
+
+Do not advertise support for these flows from documentation or skipped tests;
+each needs a passing interactive validation record against a declared
+Blender/OS/Core combination.
