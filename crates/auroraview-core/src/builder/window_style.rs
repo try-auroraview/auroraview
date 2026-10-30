@@ -1173,7 +1173,7 @@ pub fn set_window_class_dark_background(hwnd: isize) {
         let hwnd_win = HWND(hwnd as *mut _);
         // COLORREF uses 0x00bbggrr layout. #020617 => 0x00170602.
         let brush = *DARK_BACKGROUND_BRUSH
-            .get_or_init(|| CreateSolidBrush(COLORREF(0x001706CC)).0 as isize);
+            .get_or_init(|| CreateSolidBrush(COLORREF(0x00170602)).0 as isize);
         // GCLP_HBRBACKGROUND = -10
         let _ = SetClassLongPtrW(hwnd_win, GET_CLASS_LONG_INDEX(-10), brush);
         tracing::debug!(

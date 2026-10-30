@@ -490,6 +490,11 @@ test-plugins:
     vx cargo test -p auroraview-plugins
     vx cargo clippy -p auroraview-plugins -- -D warnings
 
+# Verify the actual Win32 backing color without a WebView2 runtime.
+[windows]
+test-window-background:
+    vx cargo test --locked --target "{{windows_rust_target}}" -p auroraview-core --test window_background_tests
+
 # Test auroraview-core crate (depends on signals, plugins)
 test-core:
     @echo "Testing auroraview-core..."

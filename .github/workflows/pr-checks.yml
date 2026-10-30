@@ -503,6 +503,10 @@ jobs:
           test-wheel: 'true'
           artifact-name: ${{ matrix.artifact-name }}
 
+      - name: Test native Windows background color
+        if: runner.os == 'Windows'
+        run: vx just test-window-background
+
   # =============================================================================
   # Python 3.7 Test - Separate build for Python 3.7 compatibility
   # =============================================================================
