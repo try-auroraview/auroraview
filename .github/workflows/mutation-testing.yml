@@ -132,14 +132,9 @@ jobs:
         run: |
           # Preserve cargo-mutants failures through tee, including baseline errors.
           set -o pipefail
-          # Without -p, cargo-mutants applies the args to every examined package;
-          # only request `test-helpers` when all of them define it.
-          feature_args=()
-          if cargo metadata --no-deps --format-version 1 \
-              | jq -e '[.packages[] | .features | has("test-helpers")] | all' >/dev/null; then
-            feature_args=(--features "test-helpers")
-          fi
-          cargo mutants --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml "${feature_args[@]}" 2>&1 | tee mutants-output.txt
+          # The root package's integration tests need test-helpers on Linux.
+          # Scope that feature to auroraview; other members do not define it.
+          cargo mutants -p auroraview --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml --features "test-helpers" 2>&1 | tee mutants-output.txt
 
       - name: Parse mutation results
         if: steps.changed.outputs.skip != 'true' && always()
