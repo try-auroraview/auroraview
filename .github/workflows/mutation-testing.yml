@@ -16,6 +16,9 @@ on:
     paths:
       - 'crates/**/*.rs'
       - 'src/**/*.rs'
+      - '.github/workflows/mutation-testing.yml'
+      - 'scripts/ci/test_mutation_workflow.py'
+      - 'justfile'
 
   workflow_dispatch:
     inputs:
@@ -68,7 +71,8 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.90.0
+        # The root package's dcc-mcp-protocols dev dependency requires Rust 1.95.
+        uses: dtolnay/rust-toolchain@1.95.0
 
       - name: Install system dependencies
         run: |
@@ -82,6 +86,9 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tools: 'just bun'
           cache: 'false'
+
+      - name: Test mutation workflow
+        run: vx just test-mutation-workflow
 
       - name: Build frontend assets
         run: vx just ci-assets-build
@@ -123,6 +130,8 @@ jobs:
       - name: Run incremental mutation testing
         if: steps.changed.outputs.skip != 'true'
         run: |
+          # Preserve cargo-mutants failures through tee, including baseline errors.
+          set -o pipefail
           # Without -p, cargo-mutants applies the args to every examined package;
           # only request `test-helpers` when all of them define it.
           feature_args=()
@@ -131,34 +140,29 @@ jobs:
             feature_args=(--features "test-helpers")
           fi
           cargo mutants --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml "${feature_args[@]}" 2>&1 | tee mutants-output.txt
-          exit_code=${PIPESTATUS[0]}
-          echo "exit_code=$exit_code" >> $GITHUB_ENV
 
       - name: Parse mutation results
         if: steps.changed.outputs.skip != 'true' && always()
         id: results
         run: |
-          if [ -d "mutants.out" ]; then
-            total=$(grep -c "." mutants.out/caught.txt 2>/dev/null || echo "0")
-            caught=$(grep -c "." mutants.out/caught.txt 2>/dev/null || echo "0")
-            missed=$(grep -c "." mutants.out/missed.txt 2>/dev/null || echo "0")
-            timeout=$(grep -c "." mutants.out/timeout.txt 2>/dev/null || echo "0")
-            unviable=$(grep -c "." mutants.out/unviable.txt 2>/dev/null || echo "0")
-            if [ "$((caught + missed))" -gt 0 ]; then
-              score=$(( caught * 100 / (caught + missed) ))
-            else
-              score=100
-            fi
-            echo "caught=$caught" >> $GITHUB_OUTPUT
-            echo "missed=$missed" >> $GITHUB_OUTPUT
-            echo "timeout=$timeout" >> $GITHUB_OUTPUT
-            echo "unviable=$unviable" >> $GITHUB_OUTPUT
-            echo "score=$score" >> $GITHUB_OUTPUT
-          else
-            echo "caught=0" >> $GITHUB_OUTPUT
-            echo "missed=0" >> $GITHUB_OUTPUT
-            echo "score=100" >> $GITHUB_OUTPUT
+          count_mutants() {
+            # grep prints 0 but exits 1 for an empty file; do not append another 0.
+            count=$(grep -c "." "$1" 2>/dev/null || true)
+            echo "${count:-0}"
+          }
+          caught=$(count_mutants mutants.out/caught.txt)
+          missed=$(count_mutants mutants.out/missed.txt)
+          timeout=$(count_mutants mutants.out/timeout.txt)
+          unviable=$(count_mutants mutants.out/unviable.txt)
+          score=N/A
+          if [ "$((caught + missed))" -gt 0 ]; then
+            score="$(( caught * 100 / (caught + missed) ))%"
           fi
+          echo "caught=$caught" >> "$GITHUB_OUTPUT"
+          echo "missed=$missed" >> "$GITHUB_OUTPUT"
+          echo "timeout=$timeout" >> "$GITHUB_OUTPUT"
+          echo "unviable=$unviable" >> "$GITHUB_OUTPUT"
+          echo "score=$score" >> "$GITHUB_OUTPUT"
 
       - name: Comment PR with mutation results
         if: steps.changed.outputs.skip != 'true' && always() && github.event.pull_request.head.repo.full_name == github.repository
@@ -176,9 +180,11 @@ jobs:
             body += `| Caught | ${caught} |\n`;
             body += `| Missed | ${missed} |\n`;
             body += `| Timeout | ${timeout} |\n`;
-            body += `| **Score** | **${score}%** |\n\n`;
+            body += `| **Score** | **${score}** |\n\n`;
 
-            if (parseInt(missed) > 0) {
+            if (score === 'N/A') {
+              body += 'No mutants completed. Check the mutation testing step for baseline or setup errors.\n';
+            } else if (parseInt(missed) > 0) {
               body += '> Some mutations survived. Consider adding tests for the affected code paths.\n';
               body += '<details><summary>Missed mutants</summary>\n\n```\n';
               const fs = require('fs');
@@ -186,6 +192,8 @@ jobs:
                 body += fs.readFileSync('mutants.out/missed.txt', 'utf-8').substring(0, 3000);
               }
               body += '\n```\n</details>\n';
+            } else if (parseInt(timeout) > 0) {
+              body += 'Some mutations timed out. Check the mutation testing logs.\n';
             } else {
               body += 'All mutations were caught by tests.\n';
             }
@@ -227,7 +235,7 @@ jobs:
             echo "| Caught | ${{ steps.results.outputs.caught }} |"
             echo "| Missed | ${{ steps.results.outputs.missed }} |"
             echo "| Timeout | ${{ steps.results.outputs.timeout }} |"
-            echo "| **Score** | **${{ steps.results.outputs.score }}%** |"
+            echo "| **Score** | **${{ steps.results.outputs.score }}** |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload mutation results

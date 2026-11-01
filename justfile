@@ -65,6 +65,12 @@ gallery-ci-check:
 gallery-ci-stage-wheel wheel_dir:
     vx uv run --no-project --python 3.11 "{{justfile_directory()}}/scripts/ci/stage_gallery_wheel.py" "{{wheel_dir}}"
 
+# Replay mutation workflow parsing and CLI failures without compiling mutants.
+test-mutation-workflow:
+    vx uvx ruff check --target-version py311 scripts/ci/test_mutation_workflow.py
+    vx uvx ruff format --check --target-version py311 scripts/ci/test_mutation_workflow.py
+    vx --with jq uv run --no-project --python 3.11 --with pyyaml -m unittest discover -s scripts/ci -p test_mutation_workflow.py -v
+
 test-parent-ipc:
     vx cargo test -p auroraview-core --test parent_ipc_tests
 
