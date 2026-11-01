@@ -80,6 +80,28 @@ class MutationWorkflow(unittest.TestCase):
             {"caught": "2", "missed": "0", "timeout": "0", "unviable": "0", "score": "100%"},
         )
 
+    def test_root_helpers_are_enabled_with_mixed_workspace_features(self):
+        self.assertIsNotNone(shutil.which("jq"), "jq is required for the workflow metadata probe")
+        cargo = """
+        cargo() {
+          if [ "$1" = metadata ]; then
+            printf '%s\\n' '{"packages":[{"name":"auroraview","features":{"test-helpers":[]}},{"name":"auroraview-core","features":{}}]}'
+          else
+            printf '%s\\n' "$@" > cargo-args.txt
+          fi
+        }
+        """
+        result = self.run_step("Run incremental mutation testing", cargo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = (self.root / "cargo-args.txt").read_text().splitlines()
+        self.assertIn("--features", args, "root integration tests require test-helpers on Linux")
+        self.assertEqual(args[args.index("--features") + 1], "test-helpers")
+        package_option = next((arg for arg in args if arg in ("-p", "--package")), None)
+        self.assertIsNotNone(
+            package_option, "feature flags must target the root package explicitly"
+        )
+        self.assertEqual(args[args.index(package_option) + 1], "auroraview")
+
     def test_mutation_exit_status_survives_log_pipeline(self):
         self.assertIsNotNone(shutil.which("jq"), "jq is required for the workflow metadata probe")
         for exit_code in (0, 2, 3, 4):
