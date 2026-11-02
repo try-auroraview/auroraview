@@ -18,6 +18,7 @@ on:
       - 'src/**/*.rs'
       - '.github/workflows/mutation-testing.yml'
       - 'scripts/ci/test_mutation_workflow.py'
+      - 'scripts/ci/mutation_changed_files.py'
       - 'justfile'
 
   workflow_dispatch:
@@ -112,33 +113,62 @@ jobs:
       - name: Get changed Rust files
         id: changed
         run: |
-          files=$(git diff --name-only --diff-filter=ACMR ${{ github.event.pull_request.base.sha }}..HEAD -- '*.rs' | grep -E '^(crates|src)/' | head -20 || true)
+          base=${{ github.event.pull_request.base.sha }}
+          # --in-diff is cargo-mutants' supported incremental selector: it
+          # mutates only lines touched by this PR, across all workspace crates.
+          git diff "$base"..HEAD -- '*.rs' > mutation.diff
+          files=$(git diff --name-only --diff-filter=ACMR "$base"..HEAD -- '*.rs' | grep -E '^(crates|src)/' || true)
           if [ -z "$files" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "windows_only=false" >> "$GITHUB_OUTPUT"
             echo "No Rust source files changed"
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            # Build --file args
-            file_args=""
-            for f in $files; do
-              file_args="$file_args --file $f"
-            done
-            echo "file_args=$file_args" >> $GITHUB_OUTPUT
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$files" > changed-files.txt
+            # The incremental job runs on ubuntu-latest. If every changed Rust
+            # line sits behind a target_os=windows cfg, it cannot be compiled or
+            # exercised here, so classify the diff and defer to the native test.
+            python3 scripts/ci/mutation_changed_files.py \
+              --diff mutation.diff --files changed-files.txt --root . --output "$GITHUB_OUTPUT"
             echo "Changed files: $files"
           fi
 
       - name: Run incremental mutation testing
-        if: steps.changed.outputs.skip != 'true'
+        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true'
         run: |
           # Preserve cargo-mutants failures through tee, including baseline errors.
           set -o pipefail
-          # The root package's integration tests need test-helpers on Linux.
-          # Scope that feature to auroraview; other members do not define it.
-          # Features must precede -- to reach both compilation and test phases.
-          cargo mutants -p auroraview --features "test-helpers" --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml 2>&1 | tee mutants-output.txt
+          # --file unions with .cargo/mutants.toml examine_globs (it cannot
+          # narrow), and a hard-coded root-package filter examined only the
+          # root crate's src/ipc/**, so changed files in sub-crates (e.g.
+          # window_style.rs) were never mutated. --workspace brings all crates
+          # into scope; --in-diff restricts mutants to this PR's changed lines.
+          # cargo-mutants 27.1.0 forwards CLI --features to every per-package
+          # `cargo test`, so pass test-helpers only when every member declares
+          # it; otherwise crates without the feature fail the baseline build.
+          feature_args=()
+          if cargo metadata --no-deps --format-version 1 | jq -e '[.packages[] | .features | has("test-helpers")] | all' >/dev/null; then
+            feature_args=(--features "test-helpers")
+          fi
+          cargo mutants --workspace --in-diff mutation.diff --no-shuffle --timeout 120 "${feature_args[@]}" -- --config-file .config/nextest.toml 2>&1 | tee mutants-output.txt
+
+      - name: Explain Windows-only mutation skip
+        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only == 'true'
+        run: |
+          {
+            echo "## Mutation testing skipped (Windows-only changes)"
+            echo ""
+            echo "Every changed Rust line is behind a target_os=windows cfg."
+            echo "The incremental mutation job runs on ubuntu-latest and cannot"
+            echo "compile or exercise Windows-only code, so it is skipped instead of"
+            echo "reporting a misleading result."
+            echo ""
+            echo "Authoritative check: Test native Windows background color"
+            echo "(Windows runner) in pr-checks.yml via 'vx just test-window-background'."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Parse mutation results
-        if: steps.changed.outputs.skip != 'true' && always()
+        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true' && always()
         id: results
         run: |
           count_mutants() {
@@ -161,7 +191,7 @@ jobs:
           echo "score=$score" >> "$GITHUB_OUTPUT"
 
       - name: Comment PR with mutation results
-        if: steps.changed.outputs.skip != 'true' && always() && github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true' && always() && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         uses: actions/github-script@v9
         with:
@@ -221,7 +251,7 @@ jobs:
             }
 
       - name: Write mutation results to step summary
-        if: steps.changed.outputs.skip != 'true' && always()
+        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true' && always()
         run: |
           {
             echo "## Mutation Testing Results"

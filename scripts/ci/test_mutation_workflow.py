@@ -5,11 +5,15 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mutation_changed_files  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,6 +27,7 @@ class MutationWorkflow(unittest.TestCase):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/mutation-testing.yml").read_text(encoding="utf-8")
         )
+        self.workflow = workflow
         self.steps = {
             step["name"]: step
             for step in workflow["jobs"]["incremental"]["steps"]
@@ -82,7 +87,7 @@ class MutationWorkflow(unittest.TestCase):
             {"caught": "2", "missed": "0", "timeout": "0", "unviable": "0", "score": "100%"},
         )
 
-    def test_root_helpers_are_enabled_with_mixed_workspace_features(self):
+    def test_incremental_command_scopes_all_crates_to_changed_lines(self):
         self.assertIsNotNone(shutil.which("jq"), "jq is required for the workflow metadata probe")
         cargo = """
         cargo() {
@@ -96,16 +101,39 @@ class MutationWorkflow(unittest.TestCase):
         result = self.run_step("Run incremental mutation testing", cargo)
         self.assertEqual(result.returncode, 0, result.stderr)
         args = (self.root / "cargo-args.txt").read_text().splitlines()
-        self.assertIn("--features", args, "root integration tests require test-helpers on Linux")
+        # --workspace + --in-diff is the only selector that reaches sub-crates
+        # and restricts mutants to the lines changed by this PR.
+        self.assertIn("--workspace", args)
+        self.assertIn("--in-diff", args)
+        self.assertEqual(args[args.index("--in-diff") + 1], "mutation.diff")
+        # A hard-coded root-package filter or --file args reproduce the bug:
+        # --file unions with examine_globs, -p auroraview drops sub-crates.
+        self.assertNotIn("-p", args)
+        self.assertNotIn("--package", args)
+        self.assertNotIn("--file", args)
+        # Mixed workspace features must not leak a bare --features: cargo-mutants
+        # forwards it to every member and crashes on crates that lack it.
+        self.assertNotIn("--features", args)
+
+    def test_feature_guard_enables_helpers_when_all_members_define_it(self):
+        self.assertIsNotNone(shutil.which("jq"), "jq is required for the workflow metadata probe")
+        cargo = """
+        cargo() {
+          if [ "$1" = metadata ]; then
+            printf '%s\\n' '{"packages":[{"name":"a","features":{"test-helpers":[]}},{"name":"b","features":{"test-helpers":[]}}]}'
+          else
+            printf '%s\\n' "$@" > cargo-args.txt
+          fi
+        }
+        """
+        result = self.run_step("Run incremental mutation testing", cargo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = (self.root / "cargo-args.txt").read_text().splitlines()
+        self.assertIn("--features", args)
         self.assertEqual(args[args.index("--features") + 1], "test-helpers")
         self.assertLess(
             args.index("--features"), args.index("--"), "features must apply to baseline builds"
         )
-        package_option = next((arg for arg in args if arg in ("-p", "--package")), None)
-        self.assertIsNotNone(
-            package_option, "feature flags must target the root package explicitly"
-        )
-        self.assertEqual(args[args.index(package_option) + 1], "auroraview")
 
     def test_real_mutation_baseline_builds_feature_gated_integration_test(self):
         for tool in ("cargo", "cargo-mutants", "cargo-nextest"):
@@ -144,15 +172,17 @@ class MutationWorkflow(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, path)
 
-        # Use the actual workflow command and configs, with only the changed
-        # file replaced by a dependency-free fixture of the Timer bug pattern.
+        # Use the actual workflow command and configs. The feature guard resolves
+        # to --features test-helpers for this single-package fixture; scope the
+        # selector to the fixture file so the real baseline build stays bounded.
         script = self.steps["Run incremental mutation testing"]["run"]
         command = next(
             line.strip()
             for line in script.splitlines()
             if line.strip().startswith("cargo mutants ")
         )
-        command = command.replace("${{ steps.changed.outputs.file_args }}", "--file src/ipc/mod.rs")
+        command = command.replace('"${feature_args[@]}"', '--features "test-helpers"')
+        command = command.replace("--in-diff mutation.diff", "--file src/ipc/mod.rs")
         args = shlex.split(command.split(" 2>&1", 1)[0])
         args[0] = shutil.which("cargo")
         result = subprocess.run(
@@ -163,7 +193,7 @@ class MutationWorkflow(unittest.TestCase):
             encoding="utf-8",
             errors="replace",
             env=dict(os.environ, CARGO_TERM_COLOR="never"),
-            timeout=60,
+            timeout=90,
         )
         self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-6000:])
         outcomes = json.loads((self.root / "mutants.out/outcomes.json").read_text(encoding="utf-8"))
@@ -196,6 +226,171 @@ class MutationWorkflow(unittest.TestCase):
                     self.assertIn(
                         "mutation CLI output", (self.root / "mutants-output.txt").read_text()
                     )
+
+    def test_changed_files_step_generates_diff_and_classifies_windows_only(self):
+        changed = self.steps["Get changed Rust files"]["run"]
+        self.assertIn("> mutation.diff", changed)
+        self.assertIn("mutation_changed_files.py", changed)
+        self.assertIn("changed-files.txt", changed)
+        # The old --file union selector and its file_args output are gone.
+        self.assertNotIn("file_args", changed)
+        self.assertNotIn("--file ", changed)
+
+    def test_run_step_gates_on_windows_only_output(self):
+        run = self.steps["Run incremental mutation testing"]
+        self.assertIn("windows_only != 'true'", run["if"])
+        command = next(
+            line.strip()
+            for line in run["run"].splitlines()
+            if line.strip().startswith("cargo mutants ")
+        )
+        self.assertIn("--workspace", command)
+        self.assertIn("--in-diff mutation.diff", command)
+        self.assertNotIn("file_args", command)
+
+    def test_parse_and_report_steps_do_not_report_for_windows_only(self):
+        for name in (
+            "Parse mutation results",
+            "Comment PR with mutation results",
+            "Write mutation results to step summary",
+        ):
+            self.assertIn("windows_only != 'true'", self.steps[name]["if"])
+
+    def test_windows_skip_step_points_to_native_windows_check(self):
+        step = self.steps["Explain Windows-only mutation skip"]
+        self.assertIn("windows_only == 'true'", step["if"])
+        self.assertIn("pr-checks.yml", step["run"])
+        self.assertIn("test-window-background", step["run"])
+        pr_checks = (ROOT / ".github/workflows/pr-checks.yml").read_text(encoding="utf-8")
+        self.assertIn("runner.os == 'Windows'", pr_checks)
+        self.assertIn("Test native Windows background color", pr_checks)
+
+    def test_native_windows_recipe_keeps_locked(self):
+        justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+        recipe = next(
+            line
+            for line in justfile.split("test-window-background:", 1)[1].splitlines()
+            if line.strip().startswith("vx cargo test")
+        )
+        self.assertIn("--locked", recipe)
+        self.assertIn("window_background_tests", recipe)
+
+    def test_workflow_paths_watch_the_classifier(self):
+        # PyYAML (1.1) parses the bare `on:` key as boolean True.
+        triggers = self.workflow.get("on", self.workflow.get(True))
+        paths = triggers["pull_request"]["paths"]
+        self.assertIn("scripts/ci/mutation_changed_files.py", paths)
+
+
+class MutationChangedFiles(unittest.TestCase):
+    def test_added_lines_maps_new_side_line_numbers(self):
+        diff = (
+            "diff --git a/x.rs b/x.rs\n"
+            "--- a/x.rs\n"
+            "+++ b/x.rs\n"
+            "@@ -10,2 +10,3 @@ fn f() {\n"
+            " context\n"
+            "-removed\n"
+            "+added at 11\n"
+            "+added at 12\n"
+        )
+        self.assertEqual(mutation_changed_files.added_lines(diff), {"x.rs": {11, 12}})
+
+    def test_file_level_windows_cfg_gates_the_whole_file(self):
+        source = '#![cfg(target_os = "windows")]\nfn a() -> u32 { 1 }\nfn b() -> u32 { 2 }\n'
+        self.assertEqual(mutation_changed_files.windows_line_ranges(source), [(1, 3)])
+
+    def test_item_level_windows_cfg_gates_only_its_item(self):
+        source = "\n".join(
+            (
+                "fn portable() -> u32 { 1 }",
+                '#[cfg(target_os = "windows")]',
+                "fn win_only() -> u32 { 2 }",
+                "fn after() -> u32 { 3 }",
+            )
+        )
+        ranges = mutation_changed_files.windows_line_ranges(source)
+        self.assertIn((2, 3), ranges)
+        self.assertFalse(mutation_changed_files._covers(ranges, 1))
+        self.assertFalse(mutation_changed_files._covers(ranges, 4))
+
+    def test_is_windows_only_true_for_gated_diff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "win.rs").write_text(
+                "fn portable() -> u32 { 1 }\n"
+                '#[cfg(target_os = "windows")]\n'
+                "fn paint() -> u32 { 2 }\n",
+                encoding="utf-8",
+            )
+            diff = (
+                "diff --git a/win.rs b/win.rs\n"
+                "--- a/win.rs\n"
+                "+++ b/win.rs\n"
+                "@@ -1,3 +1,3 @@\n"
+                " fn portable() -> u32 { 1 }\n"
+                ' #[cfg(target_os = "windows")]\n'
+                "-fn paint() -> u32 { 3 }\n"
+                "+fn paint() -> u32 { 2 }\n"
+            )
+            self.assertEqual(mutation_changed_files.added_lines(diff), {"win.rs": {3}})
+            self.assertTrue(mutation_changed_files.is_windows_only(root, diff, ["win.rs"]))
+
+    def test_is_windows_only_false_for_mixed_or_unreadable_diff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "mix.rs").write_text(
+                "fn portable() -> u32 { 1 }\nfn other() -> u32 { 2 }\n", encoding="utf-8"
+            )
+            mixed = (
+                "diff --git a/mix.rs b/mix.rs\n"
+                "--- a/mix.rs\n"
+                "+++ b/mix.rs\n"
+                "@@ -1,2 +1,2 @@\n"
+                "-fn portable() -> u32 { 0 }\n"
+                "+fn portable() -> u32 { 1 }\n"
+                " fn other() -> u32 { 2 }\n"
+            )
+            self.assertFalse(mutation_changed_files.is_windows_only(root, mixed, ["mix.rs"]))
+            missing = (
+                "diff --git a/gone.rs b/gone.rs\n"
+                "--- a/gone.rs\n"
+                "+++ b/gone.rs\n"
+                "@@ -0,0 +1 @@\n"
+                "+fn new() -> u32 { 1 }\n"
+            )
+            # A source file that cannot be read is treated as mixed (conservative).
+            self.assertFalse(mutation_changed_files.is_windows_only(root, missing, ["gone.rs"]))
+
+    def test_main_writes_windows_only_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "win.rs").write_text(
+                '#![cfg(target_os = "windows")]\nfn paint() -> u32 { 1 }\n', encoding="utf-8"
+            )
+            (root / "mutation.diff").write_text(
+                "diff --git a/win.rs b/win.rs\n--- a/win.rs\n+++ b/win.rs\n"
+                "@@ -1,2 +1,2 @@\n"
+                ' #![cfg(target_os = "windows")]\n'
+                "+fn paint() -> u32 { 1 }\n",
+                encoding="utf-8",
+            )
+            (root / "changed-files.txt").write_text("win.rs\n", encoding="utf-8")
+            out = root / "out.txt"
+            rc = mutation_changed_files.main(
+                [
+                    "--diff",
+                    str(root / "mutation.diff"),
+                    "--files",
+                    str(root / "changed-files.txt"),
+                    "--root",
+                    str(root),
+                    "--output",
+                    str(out),
+                ]
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(out.read_text(encoding="utf-8"), "windows_only=true\n")
 
 
 if __name__ == "__main__":

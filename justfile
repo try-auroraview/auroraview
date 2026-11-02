@@ -67,8 +67,8 @@ gallery-ci-stage-wheel wheel_dir:
 
 # Check workflow scripts and a small real build; requires cargo-mutants and nextest.
 test-mutation-workflow:
-    vx uvx ruff check --target-version py311 scripts/ci/test_mutation_workflow.py
-    vx uvx ruff format --check --target-version py311 scripts/ci/test_mutation_workflow.py
+    vx uvx ruff check --target-version py311 scripts/ci/test_mutation_workflow.py scripts/ci/mutation_changed_files.py
+    vx uvx ruff format --check --target-version py311 scripts/ci/test_mutation_workflow.py scripts/ci/mutation_changed_files.py
     vx --with jq uv run --no-project --python 3.11 --with pyyaml -m unittest discover -s scripts/ci -p test_mutation_workflow.py -v
 
 test-parent-ipc:
