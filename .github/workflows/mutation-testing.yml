@@ -87,9 +87,6 @@ jobs:
           tools: 'just bun'
           cache: 'false'
 
-      - name: Test mutation workflow
-        run: vx just test-mutation-workflow
-
       - name: Build frontend assets
         run: vx just ci-assets-build
 
@@ -108,6 +105,9 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants,nextest
+
+      - name: Test mutation workflow
+        run: vx just test-mutation-workflow
 
       - name: Get changed Rust files
         id: changed
@@ -134,7 +134,8 @@ jobs:
           set -o pipefail
           # The root package's integration tests need test-helpers on Linux.
           # Scope that feature to auroraview; other members do not define it.
-          cargo mutants -p auroraview --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml --features "test-helpers" 2>&1 | tee mutants-output.txt
+          # Features must precede -- to reach both compilation and test phases.
+          cargo mutants -p auroraview --features "test-helpers" --no-shuffle --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml 2>&1 | tee mutants-output.txt
 
       - name: Parse mutation results
         if: steps.changed.outputs.skip != 'true' && always()
