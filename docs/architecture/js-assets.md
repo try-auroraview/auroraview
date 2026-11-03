@@ -19,6 +19,7 @@ JavaScript lives in `crates/auroraview-core/src/assets/js/`:
 
 ```
 crates/auroraview-core/src/assets/js/
+├── bom/        # browser object model APIs (dom_events, navigation_api, zoom_api, ...)
 ├── core/       # core scripts (event_bridge, command_bridge, channel_bridge, ...)
 ├── features/   # conditionally included based on WebViewConfig
 ├── plugins/    # plugin scripts (clipboard, dialog, ...)
