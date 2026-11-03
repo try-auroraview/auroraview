@@ -65,6 +65,12 @@ gallery-ci-check:
 gallery-ci-stage-wheel wheel_dir:
     vx uv run --no-project --python 3.11 "{{justfile_directory()}}/scripts/ci/stage_gallery_wheel.py" "{{wheel_dir}}"
 
+# Check workflow scripts and a small real build; requires cargo-mutants and nextest.
+test-mutation-workflow:
+    vx uvx ruff check --target-version py311 scripts/ci/test_mutation_workflow.py scripts/ci/mutation_changed_files.py
+    vx uvx ruff format --check --target-version py311 scripts/ci/test_mutation_workflow.py scripts/ci/mutation_changed_files.py
+    vx --with jq uv run --no-project --python 3.11 --with pyyaml -m unittest discover -s scripts/ci -p test_mutation_workflow.py -v
+
 test-parent-ipc:
     vx cargo test -p auroraview-core --test parent_ipc_tests
 
@@ -490,6 +496,11 @@ test-plugins:
     vx cargo test -p auroraview-plugins
     vx cargo clippy -p auroraview-plugins -- -D warnings
 
+# Verify the actual Win32 backing color without a WebView2 runtime.
+[windows]
+test-window-background:
+    vx cargo test --locked --target "{{windows_rust_target}}" -p auroraview-core --test window_background_tests
+
 # Test auroraview-core crate (depends on signals, plugins)
 test-core:
     @echo "Testing auroraview-core..."
@@ -593,6 +604,13 @@ hakari-check:
     @echo "Checking cargo-hakari state..."
     vx cargo hakari generate --diff
     vx cargo hakari manage-deps --dry-run
+
+# Verify the crates.io packaging stack without publishing.
+publish-preflight: hakari-check
+    vx python -m unittest discover -s tests/python/unit -p test_publish_preflight.py -v
+    vx cargo package -p auroraview-contract --allow-dirty --no-verify
+    vx cargo package -p auroraview-extensions --allow-dirty --no-verify
+    vx cargo package -p auroraview-protect --allow-dirty --no-verify
 
 # Verify Rust unsafe usage stays inside reviewed FFI boundaries
 unsafe-audit:

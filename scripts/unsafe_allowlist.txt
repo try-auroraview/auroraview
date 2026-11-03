@@ -17,6 +17,7 @@ crates/auroraview-core/src/builder/vibrancy.rs | 8 | DWM/User32 dynamic symbol c
 crates/auroraview-core/src/builder/window_style.rs | 31 | Win32 subclassing, DWM attributes, owner/parent mutation, and GDI brush lifecycle.
 crates/auroraview-core/src/utils.rs | 1 | Win32 process handle query and handle close.
 crates/auroraview-core/src/window/mod.rs | 2 | Win32 message posting and HWND destruction for native windows.
+crates/auroraview-core/tests/window_background_tests.rs | 5 | Win32 FFI is required to create/destroy a hidden native window and inspect its actual GDI class brush; safe Rust cannot read this OS-owned state.
 crates/auroraview-dcc/src/webview.rs | 18 | WebView2 COM controller, settings, event callbacks, and message pumping in DCC hosts.
 crates/auroraview-desktop/src/window/builder.rs | 1 | COM apartment initialization for desktop window creation.
 crates/auroraview-signals/src/signal.rs | 2 | Manual Send/Sync marker for signal storage guarded by synchronization primitives.

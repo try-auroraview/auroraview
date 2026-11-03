@@ -61,14 +61,15 @@ A packed executable appends configuration and assets using an overlay:
   - Magic: "AVPK" (4 bytes)
 ```
 
-**Content hash**: BLAKE3 over every asset, used as the runtime cache key.
+**Content hash**: BLAKE3 over every asset, truncated to the first 64 bits
+(16 hex chars), used as the runtime cache key.
 Identical content yields an identical hash and skips extraction; different
 content gets a new cache directory. This lets multiple versions coexist.
 
 ## Python standalone runtime
 
 A full Python runtime is embedded using
-[python-build-standalone](https://github.com/indygreg/python-build-standalone).
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone).
 
 | Platform | Distribution |
 |------|--------|
