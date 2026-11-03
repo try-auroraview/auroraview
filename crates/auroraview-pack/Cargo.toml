@@ -84,7 +84,6 @@ ico = "0.5"
 # Code protection (optional) - uses sibling submodule
 auroraview-protect = { path = "../auroraview-protect", optional = true }
 auroraview-extensions = { path = "../auroraview-extensions" }
-auroraview-workspace-hack = { version = "0.1", path = "../auroraview-workspace-hack" }
 
 [features]
 default = []
