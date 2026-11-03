@@ -558,8 +558,8 @@ jobs:
           CI: 'true'
           AURORAVIEW_READY_TIMEOUT: '5'
         run: |
-          # Install test dependencies (pytest only, no Qt for 3.7)
-          pip install pytest pytest-cov pytest-timeout
+          # Install test dependencies (pytest + PyYAML for YAML guards; no Qt 3.7)
+          pip install pytest pytest-cov pytest-timeout pyyaml
 
           # Install the built wheel
           wheel_file=$(ls -t dist/*.whl | head -1)
@@ -840,10 +840,11 @@ jobs:
           echo "Installing wheel: $wheel_file"
           pip install "$wheel_file"
           # PySide6<6.7 doesn't support Python 3.13+, use PySide6>=6.8 for Python 3.13+
+          # PyYAML parses the #540 mutation-wiring workflow guards collected here.
           if python -c "import sys; exit(0 if sys.version_info >= (3, 13) else 1)"; then
-            pip install pytest pytest-cov pytest-timeout qtpy "PySide6>=6.8"
+            pip install pytest pytest-cov pytest-timeout qtpy "PySide6>=6.8" pyyaml
           else
-            pip install pytest pytest-cov pytest-timeout qtpy "PySide6<6.7"
+            pip install pytest pytest-cov pytest-timeout qtpy "PySide6<6.7" pyyaml
           fi
 
       - name: Verify import
