@@ -370,6 +370,17 @@ jobs:
         if: needs.path-filter.outputs.needs_rust_checks == 'true' || needs.path-filter.outputs.needs_python_tests == 'true'
         run: vx python scripts/ci/check_contract_capability_parity.py
 
+      - name: Check capture_file_drop tri-state passthrough (RFC 0017)
+        # Scans python/auroraview, so Python-only changes can regress it;
+        # the Rust half of the contract is enforced by the type system.
+        if: needs.path-filter.outputs.needs_rust_checks == 'true' || needs.path-filter.outputs.needs_python_tests == 'true'
+        run: vx python scripts/ci/check_capture_file_drop_defaults.py
+
+      - name: Check Browser-mode drag-drop capture isolation (RFC 0016)
+        # Purely a Rust-side contract (browser crate + src/webview).
+        if: needs.path-filter.outputs.needs_rust_checks == 'true'
+        run: vx python scripts/ci/check_browser_no_drag_drop_capture.py
+
       - name: Install system dependencies
         if: needs.path-filter.outputs.needs_rust_checks == 'true'
         run: |
