@@ -1,7 +1,7 @@
 name: Mutation Testing
 
 # Runs cargo-mutants to detect undertested code.
-# - On PRs: the full planned mutant set, split across 2 deterministic shards
+# - On PRs: mutants on the changed Rust lines (--in-diff), split across 2 shards
 # - Weekly: full scan on core crates
 # - Manual: configurable via workflow_dispatch
 
@@ -10,12 +10,16 @@ on:
   schedule:
     - cron: '0 3 * * 0'
 
-  # PR incremental mutation testing (only changed Rust files)
+  # PR incremental mutation testing (only changed Rust lines)
   pull_request:
     types: [opened, synchronize]
     paths:
       - 'crates/**/*.rs'
       - 'src/**/*.rs'
+      - '.github/workflows/mutation-testing.yml'
+      - 'scripts/ci/test_mutation_workflow.py'
+      - 'scripts/ci/mutation_changed_files.py'
+      - 'justfile'
 
   workflow_dispatch:
     inputs:
@@ -55,24 +59,26 @@ env:
 
 jobs:
   # ===========================================================================
-  # Incremental mutation testing (PR only - test mutations in changed files)
+  # Incremental mutation testing (PR only - mutate the lines changed by the PR)
   #
-  # `.cargo/mutants.toml` examine_globs covers crates/** + src/ipc/**, so the
-  # `--file` args for the changed .rs files still yield ~200 mutants: this job
-  # is effectively a full round on every PR. Measured cost is 13-20s per
-  # mutant, i.e. 48-57 minutes plus a 154-227s baseline. A single 60-minute
-  # job is not robust: run 40778843830 finished 200/200 in 48m34s, but run
-  # 40790621664 (same inputs) hit the cap at 195/200. Keep the full 200 and
-  # split it into two deterministic round-robin shards (~100 mutants each,
-  # ~30 minutes per leg) instead of raising timeout-minutes or dropping work.
+  # `--workspace --in-diff mutation.diff` is cargo-mutants' supported incremental
+  # selector: --workspace brings every workspace crate into scope, --in-diff
+  # restricts mutants to the lines touched by this PR. The old `--file` args
+  # unioned with .cargo/mutants.toml examine_globs (they cannot narrow) and
+  # skipped changed files in sub-crates entirely. The resulting planned set is
+  # still split into two deterministic round-robin shards so a large diff never
+  # truncates a leg; measured full rounds took 48-57 minutes with a 154-227s
+  # baseline, so 60 minutes per leg leaves headroom without dropping work.
+  # `Record shard context` plus the aggregate/parse/gate report job keep the
+  # result honest when a leg is cancelled, incomplete or intentionally skipped.
   # ===========================================================================
   incremental:
     name: Incremental Mutations (shard ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     # Run 40790621664 reached only 195/200 planned mutants at the 60-minute
     # job limit (baseline: 227s build + 4s test; later mutants: ~16-20s each).
-    # Do NOT raise this cap: the full 200-mutant set is split across two
-    # round-robin shards, so each leg runs ~100 mutants. Per-leg budget:
+    # Do NOT raise this cap: the planned --in-diff set is split across two
+    # round-robin shards, so each leg handles roughly half. Worst-case budget:
     # 100 * 20s + 231s baseline + 4m setup + 15m variance headroom = ~56m.
     # Cancellation/partial results still fail the completeness gate below.
     timeout-minutes: 60
@@ -128,40 +134,58 @@ jobs:
         with:
           tool: cargo-mutants,nextest
 
+      # Exercise the real selector contracts before any mutation is planned.
+      # `MutationChangedFiles` is the structure-independent half of the merged
+      # #540 suite: the `MutationWorkflow` class binds main's single-job shape,
+      # while this head keeps the two-shard + report-integrity shape. The
+      # equivalent workflow wiring contracts are covered by the PR Checks
+      # module tests/python/unit/test_mutation_in_diff_wiring.py.
+      - name: Test mutation selector contracts
+        run: |
+          vx --with jq uv run --no-project --python 3.11 --with pyyaml \
+            -m unittest discover -s scripts/ci -p test_mutation_workflow.py -k MutationChangedFiles -v
+
       - name: Get changed Rust files
         id: changed
         run: |
-          files=$(git diff --name-only --diff-filter=ACMR ${{ github.event.pull_request.base.sha }}..HEAD -- '*.rs' | grep -E '^(crates|src)/' | head -20 || true)
+          base=${{ github.event.pull_request.base.sha }}
+          # --in-diff is cargo-mutants' supported incremental selector: it
+          # mutates only lines touched by this PR, across all workspace crates.
+          git diff "$base"..HEAD -- '*.rs' > mutation.diff
+          files=$(git diff --name-only --diff-filter=ACMR "$base"..HEAD -- '*.rs' | grep -E '^(crates|src)/' || true)
           if [ -z "$files" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "windows_only=false" >> "$GITHUB_OUTPUT"
             echo "No Rust source files changed"
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            # Build --file args
-            file_args=""
-            for f in $files; do
-              file_args="$file_args --file $f"
-            done
-            echo "file_args=$file_args" >> $GITHUB_OUTPUT
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$files" > changed-files.txt
+            # The incremental job runs on ubuntu-latest. If every changed Rust
+            # line sits behind a target_os=windows cfg, it cannot be compiled or
+            # exercised here, so classify the diff and defer to the native test.
+            python3 scripts/ci/mutation_changed_files.py \
+              --diff mutation.diff --files changed-files.txt --root . --output "$GITHUB_OUTPUT"
             echo "Changed files: $files"
           fi
 
       - name: Run incremental mutation testing
         id: mutants
-        if: steps.changed.outputs.skip != 'true'
+        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true'
         run: |
-          # Without -p, cargo-mutants applies the args to every examined package;
-          # only request `test-helpers` when all of them define it.
+          # cargo-mutants 27.1.0 forwards CLI --features to every per-package
+          # `cargo test`, so pass test-helpers only when every member declares
+          # it; otherwise crates without the feature fail the baseline build.
+          # --features must precede `--` to reach the baseline build command.
           feature_args=()
           if cargo metadata --no-deps --format-version 1 \
               | jq -e '[.packages[] | .features | has("test-helpers")] | all' >/dev/null; then
             feature_args=(--features "test-helpers")
           fi
-          # Two deterministic shards keep ALL 200 planned mutants. Round-robin
-          # matters: measured times are ~8s for the first 50 mutants and ~20s
-          # for the rest, so the default `slice` algorithm would unbalance the
-          # legs (23.5 vs 32 minutes); round-robin gives ~28 minutes each.
-          cargo mutants --no-shuffle --shard ${{ matrix.shard }}/2 --sharding round-robin --timeout 120 ${{ steps.changed.outputs.file_args }} -- --config-file .config/nextest.toml "${feature_args[@]}" 2>&1 | tee mutants-output.txt
+          # Two deterministic round-robin shards split the --in-diff planned
+          # set without truncation. Round-robin matters: measured times are ~8s
+          # for the first 50 mutants and ~20s for the rest, so the default
+          # `slice` algorithm would unbalance the legs; round-robin evens them.
+          cargo mutants --workspace --in-diff mutation.diff --no-shuffle --shard ${{ matrix.shard }}/2 --sharding round-robin --timeout 120 "${feature_args[@]}" -- --config-file .config/nextest.toml 2>&1 | tee mutants-output.txt
           exit_code=${PIPESTATUS[0]}
           # Expose the real exit code as a step output. On cancellation the step
           # is killed before this line, so the output stays empty and the shard
@@ -169,6 +193,21 @@ jobs:
           # NOT `exit "$exit_code"` here: that would flip a completed `missed`
           # run (exit 2) into a failed step and change the existing quality gate.
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+
+      - name: Explain Windows-only mutation skip
+        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only == 'true'
+        run: |
+          {
+            echo "## Mutation testing skipped (Windows-only changes)"
+            echo ""
+            echo "Every changed Rust line is behind a target_os=windows cfg."
+            echo "The incremental mutation job runs on ubuntu-latest and cannot"
+            echo "compile or exercise Windows-only code, so it is skipped instead of"
+            echo "reporting a misleading result."
+            echo ""
+            echo "Authoritative check: Test native Windows background color"
+            echo "(Windows runner) in pr-checks.yml via 'vx just test-window-background'."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record shard context
         id: context
@@ -181,11 +220,20 @@ jobs:
           MUTANTS_STEP_CONCLUSION: ${{ steps.mutants.conclusion }}
           JOB_STATUS: ${{ job.status }}
           CHANGED_SKIP: ${{ steps.changed.outputs.skip }}
+          CHANGED_WINDOWS_ONLY: ${{ steps.changed.outputs.windows_only }}
         run: |
           mkdir -p mutants.out
-          printf '{"shard":%s,"shards":2,"exit_code":"%s","step_outcome":"%s","step_conclusion":"%s","job_status":"%s","skip":"%s"}\n' \
+          # A Windows-only diff skips the mutants step but is an intentional
+          # skip, not a partial leg: both shards must report skip=true so the
+          # aggregate job suppresses the parser/gate instead of rejecting the
+          # (legitimately empty) result set.
+          effective_skip="$CHANGED_SKIP"
+          if [ "$CHANGED_WINDOWS_ONLY" = "true" ]; then
+            effective_skip=true
+          fi
+          printf '{"shard":%s,"shards":2,"exit_code":"%s","step_outcome":"%s","step_conclusion":"%s","job_status":"%s","skip":"%s","windows_only":"%s"}\n' \
             "${{ matrix.shard }}" "$SHARD_EXIT_CODE" "$MUTANTS_STEP_OUTCOME" \
-            "$MUTANTS_STEP_CONCLUSION" "$JOB_STATUS" "$CHANGED_SKIP" \
+            "$MUTANTS_STEP_CONCLUSION" "$JOB_STATUS" "$effective_skip" "$CHANGED_WINDOWS_ONLY" \
             > mutants.out/shard_meta.json
 
       - name: Upload shard results

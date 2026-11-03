@@ -3,9 +3,13 @@
 Run 40790621664 (head afbac389) hit the 60-minute cap at 195/200 mutants even
 though the same inputs finished 200/200 in 48m34s on run 40778843830. Runner
 variance (13.4s -> 17.0s per mutant, 154s -> 227s baseline) makes a single
-60-minute job non-deterministic. The fix keeps ALL 200 planned mutants but
-runs them as two deterministic round-robin shards, then merges them back into
+60-minute job non-deterministic. The fix keeps the whole planned mutant set but
+runs it as two deterministic round-robin shards, then merges them back into
 one result set judged by ``parse_mutation_results.py``.
+
+The selector is now ``--workspace --in-diff mutation.diff`` (main #540): only
+lines changed by the PR are mutated, across every workspace crate. The shard
+matrix still splits that planned set without truncation.
 
 These tests pin the contract:
 
@@ -13,8 +17,9 @@ These tests pin the contract:
 * a truncated/cancelled leg yields ``incomplete / N/A`` and is rejected;
 * completeness is checked by mutant NAME (missing, duplicate, extra, missing
   leg, denominator mismatch), never by a rounded-up counter;
-* the workflow really wires the shard matrix, the aggregate step's runner
-  contexts and the parser flags, and never raises the timeout or drops work.
+* the workflow really wires the changed-line selector, the shard matrix, the
+  aggregate step's runner contexts and the parser flags, and never raises the
+  timeout or drops work.
 """
 
 from __future__ import annotations
@@ -468,7 +473,7 @@ def _job_block(text: str, name: str) -> str:
     return match.group("body")
 
 
-def test_workflow_keeps_all_200_mutants_in_two_deterministic_shards():
+def test_workflow_splits_the_in_diff_mutant_set_into_two_deterministic_shards():
     text = _WORKFLOW.read_text(encoding="utf-8")
     block = _job_block(text, "incremental")
     assert re.search(r"matrix:\s*\n\s+shard: \[0, 1\]", block)
@@ -477,6 +482,12 @@ def test_workflow_keeps_all_200_mutants_in_two_deterministic_shards():
     assert "--sharding round-robin" in block
     timeout = re.search(r"timeout-minutes:\s*(\d+)", block)
     assert timeout and int(timeout.group(1)) == 60, "timeout must not be raised again"
+    # The merged #540 selector scopes every crate to the PR's changed lines.
+    # --file unions with examine_globs and cannot narrow; file_args is gone.
+    assert "--workspace --in-diff mutation.diff" in block
+    assert "file_args" not in block
+    assert "--file " not in block
+    assert "head -20" not in block, "the selector must not truncate changed files"
     # No sampling or mutant-limit escape hatch.
     assert "--mutant-limit" not in block
     assert "--shard 0/1" not in block
@@ -517,8 +528,15 @@ def test_workflow_aggregate_and_parse_bind_real_runner_contexts():
         "${{ steps.mutants.conclusion }}",
         "${{ job.status }}",
         "${{ steps.changed.outputs.skip }}",
+        "${{ steps.changed.outputs.windows_only }}",
     ):
         assert expression in shard_step.group("body")
+
+    # A Windows-only diff skips the mutants step on both legs. Both shards must
+    # persist skip=true so the aggregate job suppresses the parser/gate rather
+    # than rejecting an intentionally empty result set.
+    assert "CHANGED_WINDOWS_ONLY" in shard_step.group("body")
+    assert "$CHANGED_WINDOWS_ONLY" in shard_step.group("body")
 
     parse_step = _parse_step_block(text)
     for env_name, expression in (
@@ -542,6 +560,12 @@ def test_workflow_gate_and_skip_semantics_preserved():
     assert re.search(r"pass\|missed\)\s+echo \"Valid mutation result", text)
     assert "::error::No valid mutation result" in text
     assert "steps.aggregate.outputs.skip != 'true'" in text
+    # #540's Windows-only handoff survives the merge: a gated diff skips the
+    # Linux mutants step with an explicit explanation, never a false score.
+    assert "windows_only != 'true'" in text
+    assert "windows_only == 'true'" in text
+    assert "pr-checks.yml" in text
+    assert "test-window-background" in text
     # The fully merged artifact keeps the original public artifact name.
     assert "name: mutation-results-incremental" in text
     assert "pattern: mutation-shard-*" in text
