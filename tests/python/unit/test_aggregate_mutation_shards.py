@@ -450,6 +450,232 @@ def test_skip_requires_complete_valid_runner_metadata(tmp_path, field, value):
     assert values["score"] == "N/A"
 
 
+# --- Legitimate empty --in-diff set -> explicit N/A, never incomplete -------
+
+
+def build_empty_shards(shards_dir: Path, *, n: int = 2, with_empty_artifacts: bool = False) -> Path:
+    """Two shards that finished a zero-mutant ``--in-diff`` run.
+
+    This is the real PR #537 shape: cargo-mutants exits 0 and writes neither
+    ``mutants.json`` nor ``outcomes.json`` when no changed line is mutatable, so
+    the uploaded artifact contains only ``shard_meta.json``. The
+    ``with_empty_artifacts`` variant covers implementations that emit empty
+    manifest/outcomes files instead of omitting them.
+    """
+    shards_dir.mkdir(parents=True, exist_ok=True)
+    for k in range(n):
+        directory = shards_dir / f"mutation-shard-{k}"
+        directory.mkdir()
+        meta = {
+            "shard": k,
+            "shards": n,
+            "exit_code": "0",
+            "step_outcome": "success",
+            "step_conclusion": "success",
+            "job_status": "success",
+            "skip": "false",
+            "windows_only": "false",
+        }
+        (directory / "shard_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        if with_empty_artifacts:
+            (directory / "mutants.json").write_text("[]", encoding="utf-8")
+            (directory / "outcomes.json").write_text(
+                json.dumps(
+                    {
+                        "outcomes": [],
+                        "start_time": "2026-11-03T10:30:00Z",
+                        "end_time": "2026-11-03T10:35:00Z",
+                        "cargo_mutants_version": "27.1.0",
+                        "total_mutants": 0,
+                        "caught": 0,
+                        "missed": 0,
+                        "timeout": 0,
+                        "unviable": 0,
+                        "success": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for name in ("caught.txt", "missed.txt", "timeout.txt", "unviable.txt"):
+                (directory / name).write_text("", encoding="utf-8")
+    return shards_dir
+
+
+@pytest.mark.parametrize("with_empty_artifacts", [False, True])
+def test_legitimate_empty_in_diff_set_is_explicit_skip_na(tmp_path, with_empty_artifacts):
+    """GREEN: healthy zero-mutant legs produce an honest N/A, not a failure."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards", with_empty_artifacts=with_empty_artifacts)
+    out = tmp_path / "mutants.out"
+
+    summary = agg.aggregate(shards, out, expect_shards=2, shard_result="success")
+    assert summary["empty"] is True
+    assert summary["skip"] is True
+    assert summary["complete"] is False
+    assert summary["planned"] == 0
+    assert summary["recorded"] == 0
+    assert summary["exit_code"] == ""
+    assert summary["step_outcome"] == "success"
+    assert summary["problems"] == []
+
+    # No fake scored result: the merged output is still unusable by the parser,
+    # proving the gate is skipped as an honest N/A rather than rounded to pass.
+    merged = json.loads((out / "outcomes.json").read_text(encoding="utf-8"))
+    assert merged["end_time"] is None
+    assert merged["total_mutants"] == 0
+    values = parser.derive(
+        out, "", step_outcome="success", step_conclusion="success", job_status="success"
+    )
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["status"] not in parser._VALID_STATUSES
+
+
+def test_empty_in_diff_cli_writes_skip_and_empty_outputs(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    shards = build_empty_shards(tmp_path / "shards")
+    gh_output = tmp_path / "gh_output.txt"
+    assert (
+        agg.main(
+            [
+                "--shards-dir",
+                str(shards),
+                "--output",
+                str(tmp_path / "mutants.out"),
+                "--expect-shards",
+                "2",
+                "--shard-result",
+                "success",
+                "--github-output",
+                str(gh_output),
+            ]
+        )
+        == 0
+    )
+    outputs = dict(
+        line.split("=", 1) for line in gh_output.read_text(encoding="utf-8").splitlines()
+    )
+    assert outputs["skip"] == "true"
+    assert outputs["empty"] == "true"
+    assert outputs["exit_code"] == ""
+    assert outputs["step_outcome"] == "success"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"exit_code": ""},
+        {"exit_code": "1"},
+        {"exit_code": "2"},
+        {"exit_code": "3"},
+        {"step_outcome": "cancelled"},
+        {"step_outcome": "failure"},
+        {"step_conclusion": "cancelled"},
+        {"job_status": "cancelled"},
+        {"job_status": "failure"},
+        {"skip": "true"},
+        {"windows_only": "true"},
+        {"shards": 3},
+        {"shard": 0},
+        {"shard": 2},
+    ],
+)
+def test_empty_diff_detection_rejects_unhealthy_leg(tmp_path, mutation):
+    """RED: one bad leg keeps the empty set rejected as incomplete."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    path = shards / "mutation-shard-1" / "shard_meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta.update(mutation)
+    path.write_text(json.dumps(meta), encoding="utf-8")
+
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    summary = values["_summary"]
+    assert summary["empty"] is False
+    assert summary["skip"] is False
+    assert summary["complete"] is False
+    assert summary["problems"], "real defects must remain reported"
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["status"] not in parser._VALID_STATUSES
+
+
+@pytest.mark.parametrize("matrix_result", ["", "failure", "cancelled", "timed_out", "skipped"])
+def test_empty_diff_detection_rejects_unsuccessful_matrix(tmp_path, matrix_result):
+    """RED: a failed/cancelled shard matrix can never become an N/A."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+def test_empty_diff_detection_rejects_missing_shard(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    import shutil
+
+    shards = build_empty_shards(tmp_path / "shards")
+    shutil.rmtree(shards / "mutation-shard-1")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["status"] == "incomplete"
+
+
+def test_empty_diff_detection_rejects_missing_shard_meta(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "shard_meta.json").unlink()
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["status"] == "incomplete"
+
+
+def test_one_leg_with_real_mutants_is_not_an_empty_diff(tmp_path):
+    """RED: a run that lost one leg's artifacts is broken, not an empty diff."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", total=4)
+    leg = shards / "mutation-shard-1"
+    for name in ("mutants.json", "outcomes.json"):
+        (leg / name).unlink()
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["_summary"]["planned"] > 0
+    assert values["status"] == "incomplete"
+
+
+def test_declared_skip_and_empty_diff_shapes_are_not_conflated(tmp_path):
+    """RED: one Windows-only skip leg plus one empty leg stays incomplete."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    path = shards / "mutation-shard-1" / "shard_meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta.update(
+        {
+            "skip": "true",
+            "step_outcome": "skipped",
+            "step_conclusion": "skipped",
+            "exit_code": "",
+        }
+    )
+    path.write_text(json.dumps(meta), encoding="utf-8")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+
+
 # --- The workflow must really wire all of this ------------------------------
 
 

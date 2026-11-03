@@ -278,3 +278,18 @@ def test_justfile_keeps_the_mutation_workflow_recipe():
     assert "test-mutation-workflow:" in justfile
     assert "test_mutation_workflow.py" in justfile
     assert "mutation_changed_files.py" in justfile
+
+
+def test_empty_in_diff_set_has_an_explicit_na_report():
+    """A verified zero-mutant run is an explicit N/A, not a silent green gate."""
+    steps = _steps()
+    assert "Report empty in-diff mutation set" in steps
+    report = steps["Report empty in-diff mutation set"]
+    assert "steps.aggregate.outputs.empty == 'true'" in report["if"]
+    assert "$GITHUB_STEP_SUMMARY" in report["run"]
+    assert "N/A" in report["run"]
+    # The gate is still keyed on the single skip output; empty is never scored.
+    gate = steps["Gate on valid mutation results"]
+    assert "steps.aggregate.outputs.skip != 'true'" in gate["if"]
+    assert re.search(r"pass\|missed\)", gate["run"])
+    assert "::error::No valid mutation result" in gate["run"]

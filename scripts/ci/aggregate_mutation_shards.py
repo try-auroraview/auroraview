@@ -19,12 +19,22 @@ Aggregate completeness is enforced by NAME, not by a counter:
 If any check fails, the merged ``outcomes.json`` keeps ``end_time: null`` and
 the aggregate exit code is empty, so the parser reports ``incomplete`` /
 ``N/A`` and the gate rejects it. Nothing is ever rounded up to a pass.
+
+The one intentional exception is a legitimately empty ``--in-diff`` set: when
+no changed line is mutatable, cargo-mutants exits 0 on every shard but writes
+neither ``mutants.json`` nor ``outcomes.json``. Provided every leg finished
+normally (persisted exit code 0, step/job ``success``, no cancellation) and
+the shard matrix result is ``success``, the aggregate emits an explicit
+``skip`` / N/A instead of an ``incomplete`` result. A cancelled leg, a missing
+artifact on just one leg, a bad exit code or a failed matrix is still rejected:
+an empty set never masks a genuinely broken run.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 _COUNTERS = ("caught", "missed", "timeout", "unviable", "total_mutants", "success")
@@ -34,6 +44,12 @@ _TXT_FILES = ("caught.txt", "missed.txt", "timeout.txt", "unviable.txt")
 # artifact, even if its outcomes.json happens to look finished.
 _INTERRUPTED = frozenset(
     {"cancelled", "timed_out", "skipped", "failure", "action_required", "stale", "neutral"}
+)
+# A zero-mutant --in-diff run uploads only shard_meta.json. These are the only
+# artifact notices that a legitimate empty set may produce; anything else is a
+# real completeness defect and must keep the result invalid.
+_EMPTY_SET_ARTIFACT_PROBLEM = re.compile(
+    r"^shard \d+: (mutants\.json missing/invalid|outcomes\.json missing/invalid)$"
 )
 
 
@@ -69,6 +85,57 @@ def _joined_text(chunks: list[str]) -> str:
         if chunk:
             parts.append(chunk)
     return "".join(parts)
+
+
+def _legitimate_empty_diff(
+    *,
+    problems: list[str],
+    legs: dict[int, tuple[Path, dict]],
+    shard_dirs: list[Path],
+    expect_shards: int,
+    expected_indices: set[int],
+    planned: dict[str, dict],
+    recorded: dict[str, dict],
+    shard_result: str,
+) -> bool:
+    """True only for a provably empty, fully completed ``--in-diff`` run.
+
+    cargo-mutants writes neither ``mutants.json`` nor ``outcomes.json`` when the
+    changed lines contain no mutatable code, yet exits 0 on every shard. Treat
+    that shape as an explicit N/A (skip) instead of ``incomplete`` -- but only
+    when every leg finished normally and no unrelated completeness check
+    failed. A cancelled leg, a missing artifact on just one leg, a bad exit
+    code, a failed matrix result or a declared skip must still be rejected.
+    """
+    if planned or recorded:
+        return False
+    if not problems or "no planned mutants found" not in problems:
+        return False
+    if any(
+        problem != "no planned mutants found" and not _EMPTY_SET_ARTIFACT_PROBLEM.match(problem)
+        for problem in problems
+    ):
+        return False
+    if shard_result != "success":
+        return False
+    if len(shard_dirs) != expect_shards or set(legs) != expected_indices:
+        return False
+    for _, meta in legs.values():
+        signals = [
+            str(meta.get(key, "")).strip().lower()
+            for key in ("step_outcome", "step_conclusion", "job_status")
+        ]
+        if any(signal != "success" for signal in signals):
+            return False
+        if str(meta.get("exit_code", "")).strip() != "0":
+            return False
+        if str(meta.get("skip", "")).strip().lower() == "true":
+            return False
+        if str(meta.get("windows_only", "")).strip().lower() == "true":
+            return False
+        if meta.get("shards") not in (None, expect_shards, str(expect_shards)):
+            return False
+    return True
 
 
 def aggregate(
@@ -132,7 +199,7 @@ def aggregate(
     planned: dict[str, dict] = {}
     recorded: dict[str, dict] = {}
     baseline: dict | None = None
-    counters = {key: 0 for key in _COUNTERS}
+    counters = dict.fromkeys(_COUNTERS, 0)
     start_times: list[str] = []
     end_times: list[str] = []
     exit_codes: list[str] = []
@@ -214,7 +281,25 @@ def aggregate(
             f"counter total_mutants={counters['total_mutants']} != recorded={len(recorded)}"
         )
 
-    complete = not problems and not all_skipped
+    # A legitimate empty --in-diff set is an explicit N/A, not a defect. The
+    # missing-manifest/outcomes notices are expected for that shape; drop them
+    # so they are not reported as problems, but keep `complete` false through
+    # the explicit empty_diff flag (there is no scored result to publish).
+    empty_diff = _legitimate_empty_diff(
+        problems=problems,
+        legs=legs,
+        shard_dirs=shard_dirs,
+        expect_shards=expect_shards,
+        expected_indices=expected_indices,
+        planned=planned,
+        recorded=recorded,
+        shard_result=shard_result,
+    )
+    if empty_diff:
+        problems = []
+
+    skip = all_skipped or empty_diff
+    complete = not problems and not all_skipped and not empty_diff
     signal = "success"
     if shard_result in {"cancelled", "timed_out", "skipped"}:
         signal = "cancelled"
@@ -260,9 +345,10 @@ def aggregate(
 
     return {
         "complete": complete,
-        "skip": all_skipped,
+        "skip": skip,
+        "empty": empty_diff,
         "exit_code": exit_code,
-        "step_outcome": signal if complete else "failure" if not all_skipped else "success",
+        "step_outcome": signal if complete else ("success" if skip else "failure"),
         "planned": len(planned),
         "recorded": len(recorded),
         "problems": problems,
@@ -295,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     lines = [
         f"skip={'true' if summary['skip'] else 'false'}",
+        f"empty={'true' if summary['empty'] else 'false'}",
         f"exit_code={summary['exit_code']}",
         f"step_outcome={summary['step_outcome']}",
         f"step_conclusion={summary['step_outcome']}",
@@ -305,9 +392,14 @@ def main(argv: list[str] | None = None) -> int:
         with args.github_output.open("a", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
     print(
-        "aggregate shards: complete={complete} skip={skip} planned={planned} "
-        "recorded={recorded} exit_code={exit_code}".format(**summary)
+        "aggregate shards: complete={complete} skip={skip} empty={empty} "
+        "planned={planned} recorded={recorded} exit_code={exit_code}".format(**summary)
     )
+    if summary["empty"]:
+        print(
+            "aggregate shards: legitimate empty --in-diff set -> explicit N/A "
+            "(skip), no scored mutation result"
+        )
     for problem in summary["problems"]:
         print(f"aggregate problem: {problem}")
     return 0

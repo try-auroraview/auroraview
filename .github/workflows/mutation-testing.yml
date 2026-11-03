@@ -278,6 +278,26 @@ jobs:
             --shard-result "$SHARD_RESULT" \
             --github-output "$GITHUB_OUTPUT"
 
+      # A legitimate empty --in-diff set (changed Rust lines outside the
+      # examined crates) produces zero mutants on both shards: cargo-mutants
+      # exits 0 but writes no mutants.json/outcomes.json. The aggregator emits
+      # an explicit empty/skip N/A instead of an `incomplete` failure, so the
+      # gate is bypassed only for that verified shape -- never as a scored pass.
+      - name: Report empty in-diff mutation set
+        if: always() && steps.aggregate.outputs.empty == 'true'
+        run: |
+          {
+            echo "## Mutation Testing Results"
+            echo ""
+            echo "**Status:** N/A (empty changed-line mutation set)"
+            echo ""
+            echo "Both mutation shards completed successfully with exit code 0, but"
+            echo "the --in-diff selector produced no mutatable lines in the examined"
+            echo "crates. There is no mutation score to report. This is an intentional"
+            echo "N/A, not a failed, cancelled or all-caught result; the report gate"
+            echo "is skipped only for this verified empty shape."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Parse via a unit-tested helper instead of inline `grep -c ... || echo 0`.
       # The old pattern returned "0\n0" on empty files (grep -c prints 0 AND
       # exits 1), which crashed $((caught + missed)) under `bash -e`, and a
