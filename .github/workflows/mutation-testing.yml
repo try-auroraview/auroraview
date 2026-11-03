@@ -236,6 +236,40 @@ jobs:
             "$MUTANTS_STEP_CONCLUSION" "$JOB_STATUS" "$effective_skip" "$CHANGED_WINDOWS_ONLY" \
             > mutants.out/shard_meta.json
 
+      - name: Record zero-candidate proof
+        id: zero_candidates
+        if: always() && steps.changed.outputs.skip != 'true'
+        env:
+          SHARD_EXIT_CODE: ${{ steps.mutants.outputs.exit_code }}
+          MUTANTS_STEP_OUTCOME: ${{ steps.mutants.outcome }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEAD_SHA: ${{ github.sha }}
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          mkdir -p mutants.out
+          # cargo-mutants 27.1.0 logs "No mutants to filter" when --in-diff
+          # selects zero mutatable lines. That line is the producer's POSITIVE
+          # evidence: absent artifacts alone could also mean a corrupt or lost
+          # upload, and must never be mistaken for a legitimate empty set.
+          zero=false
+          if [ "$MUTANTS_STEP_OUTCOME" = "success" ] \
+              && [ "$SHARD_EXIT_CODE" = "0" ] \
+              && [ -f mutants-output.txt ] \
+              && grep -qF "No mutants to filter" mutants-output.txt \
+              && [ ! -e mutants.out/mutants.json ] \
+              && [ ! -e mutants.out/outcomes.json ]; then
+            zero=true
+          fi
+          diff_sha256=$(sha256sum mutation.diff | cut -d' ' -f1)
+          # Ship the exact diff so the report job can recompute the hash and
+          # bind the proof to this run's input, not just to a self-claim.
+          cp mutation.diff mutants.out/mutation.diff
+          printf '{"schema":1,"zero_candidates":%s,"shard":%s,"shards":2,"run_id":"%s","run_attempt":"%s","head_sha":"%s","diff_sha256":"%s","cargo_mutants_exit_code":"%s","no_mutants_signal":"No mutants to filter","mutants_found":0}\n' \
+            "$zero" "$SHARD_INDEX" "$RUN_ID" "$RUN_ATTEMPT" "$HEAD_SHA" \
+            "$diff_sha256" "$SHARD_EXIT_CODE" \
+            > mutants.out/zero_candidates.json
+
       - name: Upload shard results
         if: always()
         uses: actions/upload-artifact@v7
@@ -276,13 +310,19 @@ jobs:
             --output mutants.out \
             --expect-shards 2 \
             --shard-result "$SHARD_RESULT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --head-sha "$GITHUB_SHA" \
             --github-output "$GITHUB_OUTPUT"
 
       # A legitimate empty --in-diff set (changed Rust lines outside the
       # examined crates) produces zero mutants on both shards: cargo-mutants
-      # exits 0 but writes no mutants.json/outcomes.json. The aggregator emits
-      # an explicit empty/skip N/A instead of an `incomplete` failure, so the
-      # gate is bypassed only for that verified shape -- never as a scored pass.
+      # logs "No mutants to filter", exits 0 and writes no mutants.json or
+      # outcomes.json. Each shard uploads a run-bound zero_candidates.json
+      # attestation plus the exact mutation.diff. The aggregator verifies that
+      # proof and emits an explicit empty/skip N/A instead of `incomplete`;
+      # corrupt, missing or stale artifacts without it stay rejected. The gate
+      # is bypassed only for that verified shape -- never as a scored pass.
       - name: Report empty in-diff mutation set
         if: always() && steps.aggregate.outputs.empty == 'true'
         run: |

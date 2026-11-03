@@ -293,3 +293,28 @@ def test_empty_in_diff_set_has_an_explicit_na_report():
     assert "steps.aggregate.outputs.skip != 'true'" in gate["if"]
     assert re.search(r"pass\|missed\)", gate["run"])
     assert "::error::No valid mutation result" in gate["run"]
+
+
+def test_zero_candidate_proof_is_produced_and_verified():
+    """An empty set needs positive producer evidence, not just missing files."""
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    steps = _steps()
+    assert "Record zero-candidate proof" in steps
+    proof = steps["Record zero-candidate proof"]
+    assert "No mutants to filter" in proof["run"]
+    assert "zero_candidates.json" in proof["run"]
+    assert "sha256sum mutation.diff" in proof["run"]
+    assert "cp mutation.diff mutants.out/mutation.diff" in proof["run"]
+    assert proof["env"]["RUN_ID"] == "${{ github.run_id }}"
+    assert proof["env"]["RUN_ATTEMPT"] == "${{ github.run_attempt }}"
+    # The attestation must be written before the shard artifact is uploaded.
+    assert text.index("- name: Record zero-candidate proof") < text.index(
+        "- name: Upload shard results"
+    )
+    aggregate = steps["Aggregate shard results"]
+    assert "--run-id" in aggregate["run"]
+    assert "--run-attempt" in aggregate["run"]
+    assert "--head-sha" in aggregate["run"]
+    # The gate is still bypassed only through the single skip output.
+    gate = steps["Gate on valid mutation results"]
+    assert "steps.aggregate.outputs.skip != 'true'" in gate["if"]

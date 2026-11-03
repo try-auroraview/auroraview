@@ -24,6 +24,7 @@ These tests pin the contract:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -35,6 +36,19 @@ _ROOT = Path(__file__).resolve().parents[3]
 _AGG = _ROOT / "scripts/ci/aggregate_mutation_shards.py"
 _PARSER = _ROOT / "scripts/ci/parse_mutation_results.py"
 _WORKFLOW = _ROOT / ".github/workflows/mutation-testing.yml"
+
+# The report job binds zero-candidate proofs to the real workflow run.
+_RUN_ID = "41624524383"
+_RUN_ATTEMPT = "1"
+_HEAD_SHA = "211445e7183312b3c3147d58b768d63a473aac09"
+_DIFF_TEXT = (
+    "diff --git a/src/webview/desktop/icon.rs b/src/webview/desktop/icon.rs\n"
+    "--- a/src/webview/desktop/icon.rs\n"
+    "+++ b/src/webview/desktop/icon.rs\n"
+    "@@ -1 +1 @@\n"
+    "+fn icon() {}\n"
+)
+_DIFF_SHA256 = hashlib.sha256(_DIFF_TEXT.encode("utf-8")).hexdigest()
 
 
 def _load(name: str, path: Path):  # noqa: ANN201
@@ -175,6 +189,9 @@ def build_shards(
 
 
 def _derive_after_aggregate(agg, parser, shards_dir: Path, out: Path, **kwargs) -> dict[str, str]:
+    kwargs.setdefault("run_id", _RUN_ID)
+    kwargs.setdefault("run_attempt", _RUN_ATTEMPT)
+    kwargs.setdefault("head_sha", _HEAD_SHA)
     summary = agg.aggregate(shards_dir, out, expect_shards=2, **kwargs)
     values = parser.derive(
         out,
@@ -453,14 +470,41 @@ def test_skip_requires_complete_valid_runner_metadata(tmp_path, field, value):
 # --- Legitimate empty --in-diff set -> explicit N/A, never incomplete -------
 
 
-def build_empty_shards(shards_dir: Path, *, n: int = 2, with_empty_artifacts: bool = False) -> Path:
+def _zero_candidate_proof(k: int, *, n: int = 2, **overrides) -> dict:
+    """The producer attestation written by a shard's cargo-mutants step."""
+    proof = {
+        "schema": 1,
+        "zero_candidates": True,
+        "shard": k,
+        "shards": n,
+        "run_id": _RUN_ID,
+        "run_attempt": _RUN_ATTEMPT,
+        "head_sha": _HEAD_SHA,
+        "diff_sha256": _DIFF_SHA256,
+        "cargo_mutants_exit_code": "0",
+        "no_mutants_signal": "No mutants to filter",
+        "mutants_found": 0,
+    }
+    proof.update(overrides)
+    return proof
+
+
+def build_empty_shards(
+    shards_dir: Path,
+    *,
+    n: int = 2,
+    with_proof: bool = True,
+    with_diff: bool = True,
+    artifact_mode: str = "absent",
+) -> Path:
     """Two shards that finished a zero-mutant ``--in-diff`` run.
 
-    This is the real PR #537 shape: cargo-mutants exits 0 and writes neither
-    ``mutants.json`` nor ``outcomes.json`` when no changed line is mutatable, so
-    the uploaded artifact contains only ``shard_meta.json``. The
-    ``with_empty_artifacts`` variant covers implementations that emit empty
-    manifest/outcomes files instead of omitting them.
+    This is the real PR #537 shape: cargo-mutants logs ``No mutants to filter``,
+    exits 0 and writes neither ``mutants.json`` nor ``outcomes.json``. Each leg
+    uploads ``shard_meta.json``, the exact ``mutation.diff`` and a run-bound
+    ``zero_candidates.json`` attestation. ``artifact_mode='corrupt'`` writes
+    present-but-invalid artifacts to prove that file absence alone is never
+    accepted as evidence of an empty set.
     """
     shards_dir.mkdir(parents=True, exist_ok=True)
     for k in range(n):
@@ -477,39 +521,51 @@ def build_empty_shards(shards_dir: Path, *, n: int = 2, with_empty_artifacts: bo
             "windows_only": "false",
         }
         (directory / "shard_meta.json").write_text(json.dumps(meta), encoding="utf-8")
-        if with_empty_artifacts:
-            (directory / "mutants.json").write_text("[]", encoding="utf-8")
-            (directory / "outcomes.json").write_text(
-                json.dumps(
-                    {
-                        "outcomes": [],
-                        "start_time": "2026-11-03T10:30:00Z",
-                        "end_time": "2026-11-03T10:35:00Z",
-                        "cargo_mutants_version": "27.1.0",
-                        "total_mutants": 0,
-                        "caught": 0,
-                        "missed": 0,
-                        "timeout": 0,
-                        "unviable": 0,
-                        "success": 0,
-                    }
-                ),
-                encoding="utf-8",
+        if with_diff:
+            # Exact bytes: write_text() would translate \n to \r\n on Windows
+            # and change the SHA-256 that the producer's sha256sum sees.
+            (directory / "mutation.diff").write_bytes(_DIFF_TEXT.encode("utf-8"))
+        if with_proof:
+            (directory / "zero_candidates.json").write_text(
+                json.dumps(_zero_candidate_proof(k, n=n)), encoding="utf-8"
             )
-            for name in ("caught.txt", "missed.txt", "timeout.txt", "unviable.txt"):
-                (directory / name).write_text("", encoding="utf-8")
+        if artifact_mode == "corrupt":
+            for name in ("mutants.json", "outcomes.json"):
+                (directory / name).write_text("{ not valid json", encoding="utf-8")
+        elif artifact_mode != "absent":
+            raise ValueError(f"unknown artifact_mode: {artifact_mode}")
     return shards_dir
 
 
-@pytest.mark.parametrize("with_empty_artifacts", [False, True])
-def test_legitimate_empty_in_diff_set_is_explicit_skip_na(tmp_path, with_empty_artifacts):
-    """GREEN: healthy zero-mutant legs produce an honest N/A, not a failure."""
+def _assert_rejected(agg, parser, shards: Path, tmp_path: Path) -> None:
+    """Every counterexample must stay an incomplete / N/A run, not an N/A skip."""
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    summary = values["_summary"]
+    assert summary["empty"] is False
+    assert summary["skip"] is False
+    assert summary["complete"] is False
+    assert summary["problems"], "real defects must remain reported"
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["status"] not in parser._VALID_STATUSES
+
+
+def test_legitimate_empty_in_diff_set_is_explicit_skip_na(tmp_path):
+    """GREEN: a producer-attested zero-mutant run is an honest N/A."""
     agg = _load("aggregate_mutation_shards", _AGG)
     parser = _load("parse_mutation_results", _PARSER)
-    shards = build_empty_shards(tmp_path / "shards", with_empty_artifacts=with_empty_artifacts)
+    shards = build_empty_shards(tmp_path / "shards")
     out = tmp_path / "mutants.out"
 
-    summary = agg.aggregate(shards, out, expect_shards=2, shard_result="success")
+    summary = agg.aggregate(
+        shards,
+        out,
+        expect_shards=2,
+        shard_result="success",
+        run_id=_RUN_ID,
+        run_attempt=_RUN_ATTEMPT,
+        head_sha=_HEAD_SHA,
+    )
     assert summary["empty"] is True
     assert summary["skip"] is True
     assert summary["complete"] is False
@@ -547,6 +603,12 @@ def test_empty_in_diff_cli_writes_skip_and_empty_outputs(tmp_path):
                 "2",
                 "--shard-result",
                 "success",
+                "--run-id",
+                _RUN_ID,
+                "--run-attempt",
+                _RUN_ATTEMPT,
+                "--head-sha",
+                _HEAD_SHA,
                 "--github-output",
                 str(gh_output),
             ]
@@ -560,6 +622,109 @@ def test_empty_in_diff_cli_writes_skip_and_empty_outputs(tmp_path):
     assert outputs["empty"] == "true"
     assert outputs["exit_code"] == ""
     assert outputs["step_outcome"] == "success"
+
+
+def test_both_legs_with_corrupt_json_are_not_an_empty_diff(tmp_path):
+    """RED: corrupt artifacts must never be inferred as a zero-mutant run."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards", artifact_mode="corrupt")
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_missing_artifacts_without_producer_proof_are_rejected(tmp_path):
+    """RED: two legs missing every result file with no proof stay incomplete."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards", with_proof=False)
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_single_leg_without_producer_proof_is_rejected(tmp_path):
+    """RED: one leg without the attestation cannot hide behind its sibling."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "zero_candidates.json").unlink()
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_single_leg_without_mutation_diff_is_rejected(tmp_path):
+    """RED: the proof must be verifiable against an uploaded diff."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "mutation.diff").unlink()
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_legs_with_different_diffs_are_rejected(tmp_path):
+    """RED: both legs must have operated on exactly the same input diff."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "mutation.diff").write_bytes(
+        (_DIFF_TEXT + "# second leg drift\n").encode("utf-8")
+    )
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"schema": 2},
+        {"zero_candidates": False},
+        {"shard": 0},
+        {"shards": 3},
+        {"run_id": "another-run"},
+        {"run_attempt": "2"},
+        {"head_sha": "0000000000000000000000000000000000000000"},
+        {"diff_sha256": "0" * 64},
+        {"diff_sha256": "not-a-hash"},
+        {"cargo_mutants_exit_code": "2"},
+        {"no_mutants_signal": "Found 200 mutants"},
+        {"mutants_found": 1},
+    ],
+)
+def test_tampered_producer_proof_is_rejected(tmp_path, override):
+    """RED: a forged or stale attestation is not evidence of an empty set."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    path = shards / "mutation-shard-1" / "zero_candidates.json"
+    proof = _zero_candidate_proof(1)
+    proof.update(override)
+    path.write_text(json.dumps(proof), encoding="utf-8")
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+@pytest.mark.parametrize("missing", ["run_id", "run_attempt", "head_sha"])
+def test_empty_diff_requires_the_current_run_binding(tmp_path, missing):
+    """RED: without the report job's run identity, no empty verdict is issued."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    shards = build_empty_shards(tmp_path / "shards")
+    bindings = {"run_id": _RUN_ID, "run_attempt": _RUN_ATTEMPT, "head_sha": _HEAD_SHA}
+    bindings[missing] = ""
+    summary = agg.aggregate(
+        shards, tmp_path / "out", expect_shards=2, shard_result="success", **bindings
+    )
+    assert summary["empty"] is False
+    assert summary["skip"] is False
+    assert summary["complete"] is False
+
+
+@pytest.mark.parametrize("matrix_result", ["cancelled", "failure", "timed_out", "skipped"])
+def test_cancelled_or_failed_matrix_is_not_an_empty_diff(tmp_path, matrix_result):
+    """RED: cancellation/failure is never laundered into an N/A skip."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
 
 
 @pytest.mark.parametrize(

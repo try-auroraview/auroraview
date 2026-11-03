@@ -21,19 +21,27 @@ the aggregate exit code is empty, so the parser reports ``incomplete`` /
 ``N/A`` and the gate rejects it. Nothing is ever rounded up to a pass.
 
 The one intentional exception is a legitimately empty ``--in-diff`` set: when
-no changed line is mutatable, cargo-mutants exits 0 on every shard but writes
-neither ``mutants.json`` nor ``outcomes.json``. Provided every leg finished
-normally (persisted exit code 0, step/job ``success``, no cancellation) and
-the shard matrix result is ``success``, the aggregate emits an explicit
-``skip`` / N/A instead of an ``incomplete`` result. A cancelled leg, a missing
-artifact on just one leg, a bad exit code or a failed matrix is still rejected:
-an empty set never masks a genuinely broken run.
+no changed line is mutatable, cargo-mutants logs ``No mutants to filter`` on
+every shard, exits 0 and writes neither ``mutants.json`` nor ``outcomes.json``.
+
+Emptiness is NEVER inferred from missing files alone: a corrupt, lost or
+truncated artifact looks exactly the same. Each shard must upload a positive
+``zero_candidates.json`` attestation written by its own cargo-mutants step,
+bound to the workflow run (``run_id`` / ``run_attempt`` / ``head_sha``) and to
+the SHA-256 of the exact ``mutation.diff`` used. The aggregate verifies every
+attestation, requires the diff files to match, requires both artifact files to
+be genuinely absent (not present-but-invalid), and requires every leg to have
+finished normally with a successful matrix result. Only then does it emit an
+explicit ``skip`` / N/A. Cancelled legs, corrupt or missing artifacts without
+that proof, bad exit codes and failed matrices still stay ``incomplete``.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -45,12 +53,12 @@ _TXT_FILES = ("caught.txt", "missed.txt", "timeout.txt", "unviable.txt")
 _INTERRUPTED = frozenset(
     {"cancelled", "timed_out", "skipped", "failure", "action_required", "stale", "neutral"}
 )
-# A zero-mutant --in-diff run uploads only shard_meta.json. These are the only
-# artifact notices that a legitimate empty set may produce; anything else is a
-# real completeness defect and must keep the result invalid.
-_EMPTY_SET_ARTIFACT_PROBLEM = re.compile(
-    r"^shard \d+: (mutants\.json missing/invalid|outcomes\.json missing/invalid)$"
-)
+# Producer-side proof for a genuinely empty --in-diff set. The shard step
+# writes this only when cargo-mutants itself logged "No mutants to filter" for
+# THIS run's diff and exited 0. Without it, missing artifacts are incomplete.
+_ZERO_CANDIDATE_SCHEMA = 1
+_NO_MUTANTS_SIGNAL = "No mutants to filter"
+_DIFF_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _load_json(path: Path):  # noqa: ANN201
@@ -87,6 +95,64 @@ def _joined_text(chunks: list[str]) -> str:
     return "".join(parts)
 
 
+def _zero_candidate_proofs(
+    legs: dict[int, tuple[Path, dict]],
+    *,
+    expect_shards: int,
+    run_id: str,
+    run_attempt: str,
+    head_sha: str,
+) -> bool:
+    """Require positive, run-bound zero-candidate evidence on every leg.
+
+    A shard writes ``zero_candidates.json`` only when its own cargo-mutants
+    step logged ``No mutants to filter`` for this run's ``mutation.diff`` and
+    exited 0. The proofs must all agree with the report job's real run identity
+    and with the SHA-256 of the diff actually uploaded in each artifact, so a
+    stale or replayed artifact from another run cannot be mistaken for this
+    run's empty set.
+    """
+    if set(legs) != set(range(expect_shards)):
+        return False
+    if not run_id or not run_attempt or not head_sha:
+        return False
+    common_digest: str | None = None
+    for index, (directory, _) in legs.items():
+        proof = _load_json(directory / "zero_candidates.json")
+        if not isinstance(proof, dict):
+            return False
+        if proof.get("schema") != _ZERO_CANDIDATE_SCHEMA:
+            return False
+        if proof.get("zero_candidates") is not True:
+            return False
+        if proof.get("shard") != index or proof.get("shards") != expect_shards:
+            return False
+        if str(proof.get("run_id", "")) != run_id:
+            return False
+        if str(proof.get("run_attempt", "")) != run_attempt:
+            return False
+        if str(proof.get("head_sha", "")) != head_sha:
+            return False
+        if str(proof.get("cargo_mutants_exit_code", "")) != "0":
+            return False
+        if proof.get("no_mutants_signal") != _NO_MUTANTS_SIGNAL:
+            return False
+        if proof.get("mutants_found") != 0:
+            return False
+        try:
+            digest = hashlib.sha256((directory / "mutation.diff").read_bytes()).hexdigest()
+        except OSError:
+            return False
+        proof_digest = str(proof.get("diff_sha256", "")).strip().lower()
+        if not _DIFF_SHA256.fullmatch(proof_digest) or proof_digest != digest:
+            return False
+        if common_digest is None:
+            common_digest = digest
+        elif digest != common_digest:
+            return False
+    return True
+
+
 def _legitimate_empty_diff(
     *,
     problems: list[str],
@@ -97,30 +163,39 @@ def _legitimate_empty_diff(
     planned: dict[str, dict],
     recorded: dict[str, dict],
     shard_result: str,
+    run_id: str,
+    run_attempt: str,
+    head_sha: str,
 ) -> bool:
     """True only for a provably empty, fully completed ``--in-diff`` run.
 
-    cargo-mutants writes neither ``mutants.json`` nor ``outcomes.json`` when the
-    changed lines contain no mutatable code, yet exits 0 on every shard. Treat
-    that shape as an explicit N/A (skip) instead of ``incomplete`` -- but only
-    when every leg finished normally and no unrelated completeness check
-    failed. A cancelled leg, a missing artifact on just one leg, a bad exit
-    code, a failed matrix result or a declared skip must still be rejected.
+    Missing ``mutants.json`` / ``outcomes.json`` alone proves nothing: both
+    files may be corrupt, truncated or never uploaded. The empty verdict needs
+    a positive producer attestation on every leg, plus an otherwise spotless
+    run. Any cancelled leg, corrupt/present artifact, bad exit code, failed
+    matrix result or declared skip is still rejected as ``incomplete``.
     """
-    if planned or recorded:
-        return False
-    if not problems or "no planned mutants found" not in problems:
-        return False
-    if any(
-        problem != "no planned mutants found" and not _EMPTY_SET_ARTIFACT_PROBLEM.match(problem)
-        for problem in problems
-    ):
-        return False
-    if shard_result != "success":
+    if planned or recorded or shard_result != "success":
         return False
     if len(shard_dirs) != expect_shards or set(legs) != expected_indices:
         return False
-    for _, meta in legs.values():
+
+    # With both artifacts genuinely absent on every leg, these are the ONLY
+    # completeness notices the aggregate can produce. Any extra problem (an
+    # interrupted signal, a missing exit code, a duplicate outcome, a counter
+    # or denominator mismatch, ...) disqualifies the run.
+    expected_problems = {"no planned mutants found"}
+    for index in range(expect_shards):
+        expected_problems.add(f"shard {index}: mutants.json missing/invalid")
+        expected_problems.add(f"shard {index}: outcomes.json missing/invalid")
+    if sorted(problems) != sorted(expected_problems):
+        return False
+
+    for _, (directory, meta) in legs.items():
+        # Present-but-corrupt artifacts are NOT an empty set. The producer only
+        # attests zero candidates when neither file exists at all.
+        if (directory / "mutants.json").exists() or (directory / "outcomes.json").exists():
+            return False
         signals = [
             str(meta.get(key, "")).strip().lower()
             for key in ("step_outcome", "step_conclusion", "job_status")
@@ -135,7 +210,14 @@ def _legitimate_empty_diff(
             return False
         if meta.get("shards") not in (None, expect_shards, str(expect_shards)):
             return False
-    return True
+
+    return _zero_candidate_proofs(
+        legs,
+        expect_shards=expect_shards,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        head_sha=head_sha,
+    )
 
 
 def aggregate(
@@ -144,6 +226,9 @@ def aggregate(
     *,
     expect_shards: int = 2,
     shard_result: str = "success",
+    run_id: str = "",
+    run_attempt: str = "",
+    head_sha: str = "",
 ) -> dict:
     """Merge shards into *output* and return a machine-readable summary."""
     problems: list[str] = []
@@ -281,10 +366,11 @@ def aggregate(
             f"counter total_mutants={counters['total_mutants']} != recorded={len(recorded)}"
         )
 
-    # A legitimate empty --in-diff set is an explicit N/A, not a defect. The
-    # missing-manifest/outcomes notices are expected for that shape; drop them
-    # so they are not reported as problems, but keep `complete` false through
-    # the explicit empty_diff flag (there is no scored result to publish).
+    # A legitimate empty --in-diff set is an explicit N/A, not a defect. It is
+    # accepted only with a run-bound producer attestation on every leg; the
+    # missing-manifest/outcomes notices are then dropped from `problems`, but
+    # `complete` stays false through the explicit empty_diff flag (there is no
+    # scored result to publish).
     empty_diff = _legitimate_empty_diff(
         problems=problems,
         legs=legs,
@@ -294,6 +380,9 @@ def aggregate(
         planned=planned,
         recorded=recorded,
         shard_result=shard_result,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        head_sha=head_sha,
     )
     if empty_diff:
         problems = []
@@ -371,6 +460,21 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="path to $GITHUB_OUTPUT; omit to print to stdout",
     )
+    parser.add_argument(
+        "--run-id",
+        default=os.environ.get("GITHUB_RUN_ID", ""),
+        help="GITHUB_RUN_ID; binds zero-candidate proofs to this workflow run",
+    )
+    parser.add_argument(
+        "--run-attempt",
+        default=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        help="GITHUB_RUN_ATTEMPT; binds zero-candidate proofs to this attempt",
+    )
+    parser.add_argument(
+        "--head-sha",
+        default=os.environ.get("GITHUB_SHA", ""),
+        help="GITHUB_SHA; binds zero-candidate proofs to this commit",
+    )
     args = parser.parse_args(argv)
 
     summary = aggregate(
@@ -378,6 +482,9 @@ def main(argv: list[str] | None = None) -> int:
         args.output,
         expect_shards=args.expect_shards,
         shard_result=args.shard_result,
+        run_id=args.run_id,
+        run_attempt=args.run_attempt,
+        head_sha=args.head_sha,
     )
     lines = [
         f"skip={'true' if summary['skip'] else 'false'}",
