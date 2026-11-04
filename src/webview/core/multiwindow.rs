@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use super::AuroraView;
+use crate::webview::window_control::WindowCommand;
 
 #[pymethods]
 impl AuroraView {
@@ -33,6 +34,9 @@ impl AuroraView {
 
     /// Restore window from minimized/maximized state
     fn restore(&self) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Restore) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner

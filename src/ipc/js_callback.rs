@@ -9,6 +9,8 @@
 //! - Timeout mechanism for stale callbacks
 //! - Thread-safe concurrent access via DashMap
 
+#[cfg(feature = "python-bindings")]
+use crate::webview::window_control::WindowControl;
 use dashmap::DashMap;
 #[cfg(feature = "python-bindings")]
 use pyo3::prelude::*;
@@ -16,6 +18,8 @@ use pyo3::prelude::*;
 use pyo3::{Py, PyAny};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(feature = "python-bindings")]
+use std::sync::OnceLock;
 #[cfg(feature = "python-bindings")]
 use std::time::Instant;
 
@@ -60,6 +64,8 @@ pub struct JsCallbackManager {
 
     /// Default timeout in milliseconds for callbacks
     default_timeout_ms: u64,
+    #[cfg(feature = "python-bindings")]
+    retained_control: OnceLock<Arc<WindowControl>>,
 }
 
 impl JsCallbackManager {
@@ -71,7 +77,16 @@ impl JsCallbackManager {
             pending_callbacks: Arc::new(DashMap::new()),
             stored_results: Arc::new(DashMap::new()),
             default_timeout_ms: 5000,
+            #[cfg(feature = "python-bindings")]
+            retained_control: OnceLock::new(),
         }
+    }
+
+    #[cfg(feature = "python-bindings")]
+    pub fn set_retained_control(&self, control: Arc<WindowControl>) -> Result<(), String> {
+        self.retained_control
+            .set(control)
+            .map_err(|_| "retained control already attached".to_string())
     }
 
     /// Generate a unique callback ID
@@ -88,12 +103,27 @@ impl JsCallbackManager {
     /// Register a Python callback with custom timeout
     #[cfg(feature = "python-bindings")]
     pub fn register_callback_with_timeout(&self, id: u64, callback: Py<PyAny>, timeout_ms: u64) {
+        if self
+            .retained_control
+            .get()
+            .is_some_and(|control| control.intent().close)
+        {
+            return;
+        }
         let entry = CallbackEntry {
             callback,
             created_at: Instant::now(),
             timeout_ms,
         };
         self.pending_callbacks.insert(id, entry);
+        if self
+            .retained_control
+            .get()
+            .is_some_and(|control| control.intent().close)
+        {
+            self.pending_callbacks.remove(&id);
+            return;
+        }
         tracing::debug!(
             "Registered JS callback with ID: {} (timeout: {}ms)",
             id,
@@ -104,6 +134,17 @@ impl JsCallbackManager {
     /// Complete a callback with the result
     #[cfg(feature = "python-bindings")]
     pub fn complete_callback(&self, id: u64, result: JsCallbackResult) -> Result<(), String> {
+        let _flight = if let Some(control) = self.retained_control.get() {
+            match control.begin_callback() {
+                Some(flight) => Some(flight),
+                None => {
+                    self.pending_callbacks.clear();
+                    return Err("retained window is closing; script callbacks are cancelled".into());
+                }
+            }
+        } else {
+            None
+        };
         if let Some((_, entry)) = self.pending_callbacks.remove(&id) {
             Python::attach(|py| {
                 // Convert result to Python objects
@@ -152,6 +193,17 @@ impl JsCallbackManager {
     /// Each timed-out callback is called with (None, "Timeout error") before removal.
     #[cfg(feature = "python-bindings")]
     pub fn cleanup_timed_out(&self) -> usize {
+        let _flight = if let Some(control) = self.retained_control.get() {
+            match control.begin_callback() {
+                Some(flight) => Some(flight),
+                None => {
+                    self.pending_callbacks.clear();
+                    return 0;
+                }
+            }
+        } else {
+            None
+        };
         let now = Instant::now();
         let mut timed_out_ids = Vec::new();
 
@@ -164,8 +216,18 @@ impl JsCallbackManager {
         }
 
         // Complete timed-out callbacks with error
+        let mut completed = 0;
         for id in &timed_out_ids {
+            if self
+                .retained_control
+                .get()
+                .is_some_and(|control| control.intent().close)
+            {
+                self.pending_callbacks.clear();
+                break;
+            }
             if let Some((_, entry)) = self.pending_callbacks.remove(id) {
+                completed += 1;
                 tracing::warn!("JS callback {} timed out after {}ms", id, entry.timeout_ms);
 
                 // Call the callback with timeout error
@@ -186,7 +248,7 @@ impl JsCallbackManager {
             }
         }
 
-        timed_out_ids.len()
+        completed
     }
 
     /// Cancel a pending callback
@@ -221,6 +283,14 @@ impl JsCallbackManager {
 
     /// Store a result for Future-style polling
     pub fn store_result(&self, id: u64, result: Option<String>, error: Option<String>) {
+        #[cfg(feature = "python-bindings")]
+        if self
+            .retained_control
+            .get()
+            .is_some_and(|control| control.intent().close)
+        {
+            return;
+        }
         self.stored_results
             .insert(id, StoredResult { result, error });
     }

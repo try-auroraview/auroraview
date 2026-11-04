@@ -874,6 +874,9 @@ class WebView(
             ...     # Use with Unreal Engine
             ...     # unreal.parent_external_window_to_slate(hwnd)
         """
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            return retained.get_hwnd()
         # First check Python-side cached HWND (thread-safe, works in non-blocking mode)
         with self._cached_hwnd_lock:
             if self._cached_hwnd is not None:
@@ -1060,6 +1063,9 @@ class WebView(
     @property
     def title(self) -> str:
         """Get the window title."""
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            return retained._control.snapshot()["title"]
         return self._title
 
     @title.setter

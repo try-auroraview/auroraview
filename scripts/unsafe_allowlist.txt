@@ -22,10 +22,12 @@ crates/auroraview-dcc/src/webview.rs | 18 | WebView2 COM controller, settings, e
 crates/auroraview-desktop/src/window/builder.rs | 1 | COM apartment initialization for desktop window creation.
 crates/auroraview-signals/src/signal.rs | 2 | Manual Send/Sync marker for signal storage guarded by synchronization primitives.
 src/platform/windows/warmup.rs | 2 | Optional Windows WebView2 runtime warmup through dynamically loaded native symbols.
+src/platform/windows/retained_window.rs | 12 | HWND subclass install/removal, OS handle validation and destruction, and Win32 close-source callback require FFI; raw Arc reference stays owned by the installed subclass until owner-thread removal or WM_NCDESTROY.
 src/platform/windows/webview2.rs | 7 | Win32 event handles, COM wait integration, and manual Send/Sync marker for signal state.
 src/webview/backend/native.rs | 2 | Win32 HWND validation, subclass callbacks, and child-window enumeration.
 src/webview/core/main.rs | 3 | Manual Send marker on a function-local raw-pointer carrier so the !Send native event loop can run inside Python::detach; the closure executes synchronously on the owning thread.
-src/webview/message_pump.rs | 4 | Win32 message pump calls and COM apartment setup.
+src/webview/message_pump.rs | 5 | Win32 message pump calls and COM apartment setup, including bounded retained-HWND dispatch on its native owner thread.
+src/webview/event_loop.rs | 1 | IsWindowVisible reads the actual retained HWND visibility through Win32 on the owner thread for confirmed snapshots.
 src/webview/proxy.rs | 2 | Manual Send/Sync marker for proxy state composed of Arc-backed synchronization.
 src/webview/tab_manager.rs | 3 | Win32 child-window enumeration callback and HWND FFI for tab discovery.
 src/webview/timer.rs | 3 | Win32 timer message loop and callback integration.
