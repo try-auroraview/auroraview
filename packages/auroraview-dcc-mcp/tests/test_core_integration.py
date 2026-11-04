@@ -12,6 +12,7 @@ import dcc_mcp_core
 import pytest
 import requests
 from auroraview_dcc_mcp import CleanupError, ClosedError, ContractError, Tool, ToolSet
+from auroraview_dcc_mcp.contracts import schema_validator
 from dcc_mcp_core import (  # noqa: E402
     BridgeExecution,
     DccServerOptions,
@@ -22,7 +23,9 @@ from dcc_mcp_core import (  # noqa: E402
     ObservabilityOptions,
 )
 from dcc_mcp_core.server_base import DccServerBase  # noqa: E402
-from jsonschema import ValidationError, validators
+from jsonschema import ValidationError
+
+pytestmark = pytest.mark.integration
 
 
 class Pump(HostUiDispatcherBase):
@@ -55,12 +58,16 @@ def service(tmp_path):
 
 def rpc(url, pump, method, params=None):
     def post():
-        response = requests.post(
-            url,
-            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}},
-            headers={"Accept": "application/json, text/event-stream"},
-            timeout=10,
-        )
+        with requests.Session() as client:
+            # A machine-level proxy must never turn this local fixture into
+            # an external connection.
+            client.trust_env = False
+            response = client.post(
+                url,
+                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}},
+                headers={"Accept": "application/json, text/event-stream"},
+                timeout=10,
+            )
         response.raise_for_status()
         if response.headers.get("Content-Type", "").startswith("text/event-stream"):
             return json.loads(
@@ -336,7 +343,7 @@ def test_discovered_envelope_preserves_local_schema_references(service, dialect)
             {"names": [tool["name"] for tool in tools], "expected": binding.tool_names}
         )
         envelope = discovered["inputSchema"]
-        validator = validators.validator_for(envelope)(envelope)
+        _, validator = schema_validator(envelope, "discovered input schema")
         validator.validate({"params": {"name": "Cube"}})
         with pytest.raises(ValidationError):
             validator.validate({"params": {"name": ""}})

@@ -4,7 +4,15 @@ install:
     vx uv sync --extra core --extra test
 
 test:
-    vx uv run --extra core --extra test python -m pytest tests -v
+    vx uv run --offline --extra test python -m pytest -v
+
+# Explicit local HTTP/MCP coverage; the fixture allows numeric loopback only.
+test-integration:
+    vx uv run --extra core --extra test python -m pytest tests/test_core_integration.py -v
+
+# Pure schema/client regression: no Core service or network access.
+test-schema:
+    vx uv run --offline --extra test python -m pytest tests/test_schema_envelope.py -v
 
 lint:
     vx uvx ruff check python tests examples ../../scripts/ci/check_dcc_mcp_wheel.py
@@ -23,7 +31,7 @@ format-example:
     vx uvx ruff check --fix examples tests/test_native_tool_client.py
     vx uvx ruff format examples tests/test_native_tool_client.py
 
-check: lint test
+check: lint test test-integration
 
 build:
     vx uv build --out-dir dist
