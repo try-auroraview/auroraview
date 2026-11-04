@@ -1,7 +1,7 @@
 # AuroraView adapter contract and pluggable backend abstraction
 
 **Status**: contracts merged (PR #471); prototype, in-branch. S1 of the per-host
-package split (PIP-3195).
+package split ([#519](https://github.com/try-auroraview/auroraview/issues/519)).
 **Scope**: contracts + a runnable prototype. No repository is created, no code is
 migrated (that is S2 and needs owner authorisation).
 
@@ -301,9 +301,11 @@ compiles today breaks.
 
 - **No repository creation, no org changes, no code migration** (S2; needs owner
   authorisation).
-- **PIP-3214 (path A groundwork)** is untouched: `--parent-hwnd` answers "how
-  does a child process embed into a host window", this answers "how is the
-  backend chosen and how does an adapter depend on core". Complementary.
+- **Parent window embedding groundwork**
+  ([#520](https://github.com/try-auroraview/auroraview/issues/520)) is untouched:
+  `--parent-hwnd` answers "how does a child process embed into a host window",
+  this answers "how is the backend chosen and how does an adapter depend on
+  core". Complementary.
 - **Surface creation is not rewired.** `BackendRegistry` selects; construction
   still goes through `auroraview.core`. Rewiring it is the next step once the
   contract is agreed — tracked as [RFC 0019](../rfcs/0019-pluggable-backend-and-host-adapter-contract.md) §2,
