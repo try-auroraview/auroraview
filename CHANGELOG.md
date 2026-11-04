@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.14](https://github.com/try-auroraview/auroraview/compare/auroraview-v0.5.13...auroraview-v0.5.14) (2026-11-04)
+
+
+### Bug Fixes
+
+* **ci:** remove unsupported timeout key from cargo-mutants config ([#524](https://github.com/try-auroraview/auroraview/issues/524)) ([1f2aac3](https://github.com/try-auroraview/auroraview/commit/1f2aac38b8febb59a1a58857bc1c67a3cebbc55e))
+* **ci:** scope incremental mutation testing to all changed crates ([d7dedf0](https://github.com/try-auroraview/auroraview/commit/d7dedf08fcb3b9ddd12f970c5c526a4ceb3a648a))
+* **dcc-mcp:** scope WebView routing to view generations ([0859364](https://github.com/try-auroraview/auroraview/commit/0859364f51c2153c4db93d24c33b4e75150eb8b0))
+* honor run_desktop(icon=...) and add Blender 5.2/Python 3.13 headless validation ([#537](https://github.com/try-auroraview/auroraview/issues/537)) ([4ea2fc0](https://github.com/try-auroraview/auroraview/commit/4ea2fc0b3ccf34dbce39a1b93b3b32c7239733c1))
+* preserve Gallery service mode and release artifacts ([#513](https://github.com/try-auroraview/auroraview/issues/513)) ([d5cc4db](https://github.com/try-auroraview/auroraview/commit/d5cc4db42ac8942f9f8b6a44bb5211aa2a24a9ad))
+* **python:** distinguish unknown from no for Qt app instance in diagnostics rendering ([8edc987](https://github.com/try-auroraview/auroraview/commit/8edc987b9517df88aae1e0d186948b3146a5a139))
+* restore the Win32 background brush color ([9be0330](https://github.com/try-auroraview/auroraview/commit/9be033039728501dd40d1f524f584b28f190440f))
+
+
+### Documentation
+
+* clarify publish preflight network access ([71b5fac](https://github.com/try-auroraview/auroraview/commit/71b5faca60a9d0276c87802b8d269e3dec15e82a))
+* correct python-build-standalone org, js asset tree, and content hash spec ([#526](https://github.com/try-auroraview/auroraview/issues/526)) ([0af2183](https://github.com/try-auroraview/auroraview/commit/0af218358c35cf9361023176348b05eea48ccc93))
+* **dcc-mcp:** link lifecycle sources outside the docs build ([1753d85](https://github.com/try-auroraview/auroraview/commit/1753d85a27e23229fe950ebef24585d6f28fd3ea))
+* use existing logo for documentation favicon ([167f7ec](https://github.com/try-auroraview/auroraview/commit/167f7ec87c6bc90259205c79bedcfa266ed84988))
+
 ## [0.5.13](https://github.com/try-auroraview/auroraview/compare/auroraview-v0.5.12...auroraview-v0.5.13) (2026-10-09)
 
 
