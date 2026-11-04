@@ -271,6 +271,20 @@ prepare-blender-test-site wheel site python_version:
 test-blender-host blender site:
     "{{blender}}" --background --factory-startup --python-exit-code 1 --python scripts/ci/run_blender_tests.py -- --test-site "{{site}}" -- tests/python/integration/test_blender_integration.py -v --tb=short --timeout=60
 
+# Visible Blender probe: additional arguments follow Blender's `--` separator.
+[windows]
+blender-loading-probe blender *ARGS:
+    & "{{blender}}" --factory-startup --python-exit-code 1 --python examples/blender_loading_probe/__init__.py -- {{ARGS}}
+
+lint-blender-loading-probe:
+    vx uvx ruff check examples/blender_loading_probe
+    vx uvx ruff format --check examples/blender_loading_probe
+
+# Use the repo's Python Playwright/CDP integration to measure arbitrary pages.
+[windows]
+measure-blender-loading-probe blender *ARGS:
+    vx uv run --no-sync python examples/blender_loading_probe/measure.py "{{blender}}" {{ARGS}}
+
 # Run all tests
 [unix]
 test:
