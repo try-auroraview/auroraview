@@ -373,6 +373,18 @@ test-rust-fast:
     @echo "Skipping cargo-nextest integration path on Windows due to abi3/PyO3 DLL constraints."
     @echo "Use Linux CI for full Rust integration coverage."
 
+# Run the retained-window control and native tests explicitly on Windows.
+[windows]
+test-retained-window:
+    $env:PYO3_PYTHON = (vx python -c "import sys; print(sys.executable)")
+    vx cargo test --test retained_window_integration --features "python-bindings win-webview2" -- --nocapture
+
+test-retained-python:
+    $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"; vx uv run python tests/python/run_retained_tests.py tests/python/unit/test_retained_window.py
+
+test-retained-native:
+    $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"; vx uv run python tests/python/run_retained_tests.py tests/python/integration/test_retained_window_native.py
+
 # Test Python unit tests without slow markers
 test-python-unit-fast:
     @echo "Running fast Python unit tests..."

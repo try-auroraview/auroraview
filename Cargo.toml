@@ -192,6 +192,7 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     # Window/message APIs (PeekMessageW, SetWindowPos, GetParent, ...)
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
     # COM apartment / CoWaitForMultipleHandles for the WebView2 STA pump
     "Win32_System_Com",
     # GDI brush / class background (set_window_class_dark_background)
@@ -291,6 +292,10 @@ features-core = ["feature-tabs", "feature-bookmarks", "feature-history", "featur
 features-all = ["features-core", "feature-downloads", "feature-settings", "feature-notifications"]
 
 # Integration tests (in tests/rust/ directory)
+[[test]]
+name = "retained_window_integration"
+path = "tests/rust/retained_window_integration_tests.rs"
+
 [[test]]
 name = "protocol_handlers_integration"
 path = "tests/rust/protocol_handlers_integration_tests.rs"

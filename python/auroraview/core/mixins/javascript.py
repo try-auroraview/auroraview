@@ -99,16 +99,27 @@ class WebViewJSMixin:
         # Note: callback is invoked synchronously after eval_js completes.
         # The callback_id pattern is reserved for future async bridge support.
 
+        def deliver(result, error):
+            if callback is None:
+                return
+            retained = getattr(self, "_retained_window", None)
+            guard = retained._control.begin_callback() if retained is not None else None
+            if retained is not None and guard is None:
+                return
+            try:
+                callback(result, error)
+            finally:
+                if guard is not None:
+                    guard.finish()
+                    retained._schedule_host_poll()
+
         try:
             self._command_target().eval_js(script)
-
-            if callback:
-                callback(None, None)
-
         except Exception as e:
             logger.error(f"JavaScript execution failed: {e}")
-            if callback:
-                callback(None, e)
+            deliver(None, e)
+        else:
+            deliver(None, None)
 
         self._auto_process_events()
 

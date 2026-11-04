@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 
 use super::AuroraView;
 use crate::ipc::WebViewMessage;
+use crate::webview::window_control::WindowCommand;
 
 #[pymethods]
 impl AuroraView {
@@ -143,6 +144,9 @@ impl AuroraView {
 
     /// Minimize window
     fn minimize(&self) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Minimize) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -157,6 +161,9 @@ impl AuroraView {
 
     /// Maximize window
     fn maximize(&self) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Maximize) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -171,6 +178,9 @@ impl AuroraView {
 
     /// Unmaximize (restore) window
     fn unmaximize(&self) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Unmaximize) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -185,6 +195,9 @@ impl AuroraView {
 
     /// Toggle maximize state
     fn toggle_maximize(&self) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::ToggleMaximize) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -199,6 +212,9 @@ impl AuroraView {
 
     /// Check if window is maximized
     fn is_maximized(&self) -> PyResult<bool> {
+        if let Some(result) = self.retained_snapshot() {
+            return Ok(result?.maximized);
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             Ok(inner.is_maximized())
@@ -211,6 +227,9 @@ impl AuroraView {
 
     /// Check if window is minimized
     fn is_minimized(&self) -> PyResult<bool> {
+        if let Some(result) = self.retained_snapshot() {
+            return Ok(result?.minimized);
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             Ok(inner.is_minimized())
@@ -223,6 +242,9 @@ impl AuroraView {
 
     /// Set fullscreen mode
     fn set_fullscreen(&self, fullscreen: bool) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::SetFullscreen(fullscreen)) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -237,6 +259,9 @@ impl AuroraView {
 
     /// Check if window is in fullscreen mode
     fn is_fullscreen(&self) -> PyResult<bool> {
+        if let Some(result) = self.retained_snapshot() {
+            return Ok(result?.fullscreen);
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             Ok(inner.is_fullscreen())
@@ -249,6 +274,19 @@ impl AuroraView {
 
     /// Set window visibility
     fn set_visible(&self, visible: bool) -> PyResult<()> {
+        if let Some(shared) = self.retained.borrow().as_ref() {
+            if visible {
+                shared
+                    .control
+                    .show(false)
+                    .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            } else {
+                shared.control.hide();
+            }
+            return shared
+                .signal()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err);
+        }
         if let Ok(inner_ref) = self.inner.try_borrow() {
             if let Some(ref inner) = *inner_ref {
                 return inner
@@ -263,6 +301,9 @@ impl AuroraView {
 
     /// Check if window is visible
     fn is_visible(&self) -> PyResult<bool> {
+        if let Some(result) = self.retained_snapshot() {
+            return Ok(result?.visible);
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             Ok(inner.is_visible())
@@ -275,6 +316,9 @@ impl AuroraView {
 
     /// Check if window has focus
     fn is_focused(&self) -> PyResult<bool> {
+        if let Some(result) = self.retained_snapshot() {
+            return Ok(result?.focused);
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             Ok(inner.is_focused())
@@ -287,6 +331,19 @@ impl AuroraView {
 
     /// Request focus for the window
     fn set_focus(&self) -> PyResult<()> {
+        if let Some(shared) = self.retained.borrow().as_ref() {
+            shared
+                .control
+                .snapshot()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            shared
+                .control
+                .show(true)
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            return shared
+                .signal()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err);
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -301,6 +358,9 @@ impl AuroraView {
 
     /// Set always on top
     fn set_always_on_top(&self, always_on_top: bool) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::SetAlwaysOnTop(always_on_top)) {
+            return result;
+        }
         match self.inner.try_borrow() {
             Ok(inner_ref) => {
                 if let Some(ref inner) = *inner_ref {
@@ -314,6 +374,9 @@ impl AuroraView {
 
     /// Set window title
     fn set_window_title(&self, title: &str) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::SetTitle(title.to_string())) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -328,6 +391,9 @@ impl AuroraView {
 
     /// Get window title
     fn window_title(&self) -> PyResult<Option<String>> {
+        if let Some(result) = self.retained_snapshot() {
+            return Ok(Some(result?.title));
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             Ok(inner.window_title())
@@ -340,6 +406,9 @@ impl AuroraView {
 
     /// Set window size
     fn set_size(&self, width: u32, height: u32) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Resize(width, height)) {
+            return result;
+        }
         // Use try_borrow to avoid panic if RefCell is already borrowed
         // This can happen during callback invocations from show_embedded/create_embedded
         match self.inner.try_borrow() {
@@ -369,6 +438,9 @@ impl AuroraView {
     /// but WebView2's internal controller bounds may not automatically update.
     /// Call this after any size change to ensure WebView content fills the container.
     fn sync_bounds(&self, width: u32, height: u32) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Resize(width, height)) {
+            return result;
+        }
         match self.inner.try_borrow() {
             Ok(inner_ref) => {
                 if let Some(ref inner) = *inner_ref {
@@ -389,6 +461,10 @@ impl AuroraView {
 
     /// Get window inner size
     fn inner_size(&self) -> PyResult<(u32, u32)> {
+        if let Some(result) = self.retained_snapshot() {
+            let s = result?;
+            return Ok((s.width, s.height));
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             let size = inner.inner_size();
@@ -402,6 +478,10 @@ impl AuroraView {
 
     /// Get window outer size (including decorations)
     fn outer_size(&self) -> PyResult<(u32, u32)> {
+        if let Some(result) = self.retained_snapshot() {
+            let s = result?;
+            return Ok((s.outer_width, s.outer_height));
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             let size = inner.outer_size();
@@ -415,6 +495,10 @@ impl AuroraView {
 
     /// Get window position
     fn position(&self) -> PyResult<Option<(i32, i32)>> {
+        if let Some(result) = self.retained_snapshot() {
+            let s = result?;
+            return Ok(Some((s.x, s.y)));
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             Ok(inner.position().map(|p| (p.x, p.y)))
@@ -427,6 +511,9 @@ impl AuroraView {
 
     /// Center window on screen
     fn center(&self) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Center) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -441,6 +528,9 @@ impl AuroraView {
 
     /// Set window decorations (title bar, borders)
     fn set_decorations(&self, decorations: bool) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::SetDecorations(decorations)) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -455,6 +545,9 @@ impl AuroraView {
 
     /// Set window resizable
     fn set_resizable(&self, resizable: bool) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::SetResizable(resizable)) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -469,6 +562,9 @@ impl AuroraView {
 
     /// Set minimum window size
     fn set_min_size(&self, width: u32, height: u32) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::SetMinSize(width, height)) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -483,6 +579,9 @@ impl AuroraView {
 
     /// Set maximum window size
     fn set_max_size(&self, width: u32, height: u32) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::SetMaxSize(width, height)) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
@@ -497,6 +596,9 @@ impl AuroraView {
 
     /// Set window position
     fn set_position(&self, x: i32, y: i32) -> PyResult<()> {
+        if let Some(result) = self.retained_command(WindowCommand::Move(x, y)) {
+            return result;
+        }
         let inner_ref = self.inner.borrow();
         if let Some(ref inner) = *inner_ref {
             inner
