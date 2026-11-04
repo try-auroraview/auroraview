@@ -88,6 +88,21 @@ run_desktop(
 )
 ```
 
+Pass `icon=` to customize the native window icon (title bar and taskbar).
+Supported formats: PNG (recommended), ICO, JPEG, BMP, GIF. This is the runtime
+window icon; it is separate from the packaged executable icon set by
+`auroraview pack --icon`.
+
+```python
+run_desktop(
+    title="My App",
+    width=1024,
+    height=768,
+    url="http://localhost:3000",
+    icon="path/to/my-icon.png",
+)
+```
+
 ### Legacy Aliases
 
 > **Note**: The following legacy aliases are no longer available:

@@ -173,7 +173,7 @@ jobs:
           wheel_file=$(ls -t dist/*.whl | head -1)
           echo "Installing wheel: $wheel_file"
           pip install "$wheel_file"
-          pip install pytest pytest-cov pytest-timeout
+          pip install pytest pytest-cov pytest-timeout pyyaml
 
       - name: Run unit tests
         shell: bash
@@ -307,7 +307,7 @@ jobs:
           wheel_file=$(ls -t dist/*.whl | head -1)
           echo "Installing wheel: $wheel_file"
           pip install "$wheel_file"
-          pip install pytest pytest-timeout
+          pip install pytest pytest-timeout pyyaml
           # Run unit tests (skip Qt tests as PySide6 doesn't support Python 3.7)
           pytest tests/python/unit/ -v --tb=short --timeout=60 \
             --ignore=tests/python/unit/test_qt_signals.py \

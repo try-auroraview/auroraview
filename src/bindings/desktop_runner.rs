@@ -12,6 +12,15 @@ use crate::ipc::{IpcHandler, MessageQueue};
 use crate::webview::config::WebViewConfig;
 use crate::webview::desktop;
 
+/// Resolve the optional `icon` kwarg into the path stored in
+/// `WebViewConfig.icon`. This is the sole flatten point from the PyO3
+/// `Option<String>` boundary to the Rust `Option<PathBuf>` field. It is shared
+/// by `run_desktop` and the `test-helpers` hook below so the exact plumbing can
+/// be asserted without launching the blocking desktop event loop.
+fn desktop_icon_path(icon: Option<String>) -> Option<PathBuf> {
+    icon.map(PathBuf::from)
+}
+
 /// Run a desktop WebView (blocking until window closes)
 ///
 /// This function creates and runs a desktop WebView window using event_loop.run().
@@ -69,6 +78,10 @@ use crate::webview::desktop;
 ///         Ignored when download_prompt is True.
 ///     proxy_url (str, optional): Proxy server URL (e.g., "http://host:port" or "socks5://host:port").
 ///     user_agent (str, optional): Custom User-Agent string.
+///     icon (str, optional): Path to a custom window icon (PNG, ICO, JPEG, BMP,
+///         or GIF). Applied to the native window title bar and taskbar. When
+///         omitted, the default AuroraView icon is used. This is the runtime
+///         window icon, NOT the packaged executable icon set by `auroraview pack`.
 ///
 /// Example:
 ///     >>> from auroraview._core import run_desktop
@@ -127,7 +140,8 @@ use crate::webview::desktop;
     download_prompt=false,
     download_directory=None,
     proxy_url=None,
-    user_agent=None
+    user_agent=None,
+    icon=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_desktop(
@@ -163,6 +177,7 @@ fn run_desktop(
     download_directory: Option<String>,
     proxy_url: Option<String>,
     user_agent: Option<String>,
+    icon: Option<String>,
 ) -> PyResult<()> {
     tracing::info!("[run_desktop] Creating desktop WebView: {}", title);
 
@@ -250,12 +265,12 @@ fn run_desktop(
         allow_media_devices: false,
         block_external_navigation: false,
         allowed_navigation_domains: Vec::new(),
-        icon: None,                       // Use default AuroraView icon
-        enable_plugins: true,             // Enable plugin APIs
+        icon: desktop_icon_path(icon), // Custom window icon or default AuroraView icon
+        enable_plugins: true,          // Enable plugin APIs
         enabled_plugin_names: Vec::new(), // All plugins
-        splash_overlay,                   // Show splash overlay while loading
-        allow_downloads,                  // Enable file downloads
-        download_prompt,                  // Show "Save As" dialog for downloads
+        splash_overlay,                // Show splash overlay while loading
+        allow_downloads,               // Enable file downloads
+        download_prompt,               // Show "Save As" dialog for downloads
         download_directory: download_directory.map(PathBuf::from),
         proxy_url,  // Proxy server URL
         user_agent, // Custom User-Agent
@@ -332,7 +347,8 @@ fn run_desktop(
     download_prompt=false,
     download_directory=None,
     proxy_url=None,
-    user_agent=None
+    user_agent=None,
+    icon=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_standalone(
@@ -368,6 +384,7 @@ fn run_standalone(
     download_directory: Option<String>,
     proxy_url: Option<String>,
     user_agent: Option<String>,
+    icon: Option<String>,
 ) -> PyResult<()> {
     run_desktop(
         title,
@@ -402,6 +419,7 @@ fn run_standalone(
         download_directory,
         proxy_url,
         user_agent,
+        icon,
     )
 }
 
@@ -430,6 +448,23 @@ fn _dump_capture_file_drop(capture_file_drop: Option<bool>) -> PyResult<bool> {
     Ok(capture_file_drop.unwrap_or(false))
 }
 
+/// Test-only hook for GH-528: round-trip the `Optional[str] icon` kwarg
+/// through the same flatten point used by `run_desktop` and return the
+/// resulting `WebViewConfig.icon` path.
+///
+///   - `None` (omitted) ......... -> `None` (default AuroraView icon)
+///   - explicit `icon="a.png"` .. -> `"a.png"`
+#[cfg(feature = "test-helpers")]
+#[pyfunction]
+#[pyo3(signature = (icon=None))]
+fn _dump_run_desktop_icon(icon: Option<String>) -> Option<String> {
+    let config = WebViewConfig {
+        icon: desktop_icon_path(icon),
+        ..Default::default()
+    };
+    config.icon.map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Register desktop runner functions with Python module
 pub fn register_desktop_runner(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_desktop, m)?)?;
@@ -437,6 +472,8 @@ pub fn register_desktop_runner(m: &Bound<'_, PyModule>) -> PyResult<()> {
                                                            // RFC 0017 §4.2: passthrough integration test hook (test-helpers only).
     #[cfg(feature = "test-helpers")]
     m.add_function(wrap_pyfunction!(_dump_capture_file_drop, m)?)?;
+    #[cfg(feature = "test-helpers")]
+    m.add_function(wrap_pyfunction!(_dump_run_desktop_icon, m)?)?;
     Ok(())
 }
 
@@ -444,6 +481,21 @@ pub fn register_desktop_runner(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// GH-528: omitting `icon` keeps the default AuroraView icon path (None).
+    #[test]
+    fn test_desktop_icon_path_default() {
+        assert_eq!(desktop_icon_path(None), None);
+    }
+
+    /// GH-528: an explicit `icon` kwarg reaches WebViewConfig.icon unchanged.
+    #[test]
+    fn test_desktop_icon_path_custom() {
+        assert_eq!(
+            desktop_icon_path(Some("assets/my-icon.png".to_string())),
+            Some(PathBuf::from("assets/my-icon.png"))
+        );
+    }
 
     #[test]
     fn test_module_registration() {

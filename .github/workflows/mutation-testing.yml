@@ -1,7 +1,7 @@
 name: Mutation Testing
 
 # Runs cargo-mutants to detect undertested code.
-# - On PRs: incremental mode (only mutate changed files)
+# - On PRs: mutants on the changed Rust lines (--in-diff), split across 2 shards
 # - Weekly: full scan on core crates
 # - Manual: configurable via workflow_dispatch
 
@@ -10,7 +10,7 @@ on:
   schedule:
     - cron: '0 3 * * 0'
 
-  # PR incremental mutation testing (only changed Rust files)
+  # PR incremental mutation testing (only changed Rust lines)
   pull_request:
     types: [opened, synchronize]
     paths:
@@ -59,21 +59,47 @@ env:
 
 jobs:
   # ===========================================================================
-  # Incremental mutation testing (PR only - test mutations in changed files)
+  # Incremental mutation testing (PR only - mutate the lines changed by the PR)
+  #
+  # `--workspace --in-diff mutation.diff` is cargo-mutants' supported incremental
+  # selector: --workspace brings every workspace crate into scope, --in-diff
+  # restricts mutants to the lines touched by this PR. The old `--file` args
+  # unioned with .cargo/mutants.toml examine_globs (they cannot narrow) and
+  # skipped changed files in sub-crates entirely. The resulting planned set is
+  # still split into two deterministic round-robin shards so a large diff never
+  # truncates a leg; measured full rounds took 48-57 minutes with a 154-227s
+  # baseline, so 60 minutes per leg leaves headroom without dropping work.
+  # `Record shard context` plus the aggregate/parse/gate report job keep the
+  # result honest when a leg is cancelled, incomplete or intentionally skipped.
   # ===========================================================================
   incremental:
-    name: Incremental Mutations
+    name: Incremental Mutations (shard ${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Run 40790621664 reached only 195/200 planned mutants at the 60-minute
+    # job limit (baseline: 227s build + 4s test; later mutants: ~16-20s each).
+    # Do NOT raise this cap: the planned --in-diff set is split across two
+    # round-robin shards, so each leg handles roughly half. Worst-case budget:
+    # 100 * 20s + 231s baseline + 4m setup + 15m variance headroom = ~56m.
+    # Cancellation/partial results still fail the completeness gate below.
+    timeout-minutes: 60
     if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false # collect every shard's mutants even if one fails
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Rust
-        # The root package's dcc-mcp-protocols dev dependency requires Rust 1.95.
-        uses: dtolnay/rust-toolchain@1.95.0
+        # cargo-mutants builds its unmutated baseline with `cargo test --no-run`,
+        # which compiles dev-dependencies. Those pull dcc-mcp-protocols (git tag
+        # v0.15.0) whose declared rust-version is 1.95, so the whole job needs
+        # rustc >= 1.95. The *library* MSRV (1.90) only applies to production
+        # wheels, which don't build dev-deps. Align with pr-checks Clippy, which
+        # already builds the full workspace on this fixed 1.98.0 toolchain.
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Install system dependencies
         run: |
@@ -99,16 +125,25 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-mutants-
+          # Scope per shard so the two legs never race to save the same key.
+          key: ${{ runner.os }}-cargo-mutants-shard${{ matrix.shard }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-mutants-shard${{ matrix.shard }}-
 
       - name: Install cargo-mutants and cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants,nextest
 
-      - name: Test mutation workflow
-        run: vx just test-mutation-workflow
+      # Exercise the real selector contracts before any mutation is planned.
+      # `MutationChangedFiles` is the structure-independent half of the merged
+      # #540 suite: the `MutationWorkflow` class binds main's single-job shape,
+      # while this head keeps the two-shard + report-integrity shape. The
+      # equivalent workflow wiring contracts are covered by the PR Checks
+      # module tests/python/unit/test_mutation_in_diff_wiring.py.
+      - name: Test mutation selector contracts
+        run: |
+          vx --with jq uv run --no-project --python 3.11 --with pyyaml \
+            -m unittest discover -s scripts/ci -p test_mutation_workflow.py -k MutationChangedFiles -v
 
       - name: Get changed Rust files
         id: changed
@@ -134,23 +169,30 @@ jobs:
           fi
 
       - name: Run incremental mutation testing
+        id: mutants
         if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true'
         run: |
-          # Preserve cargo-mutants failures through tee, including baseline errors.
-          set -o pipefail
-          # --file unions with .cargo/mutants.toml examine_globs (it cannot
-          # narrow), and a hard-coded root-package filter examined only the
-          # root crate's src/ipc/**, so changed files in sub-crates (e.g.
-          # window_style.rs) were never mutated. --workspace brings all crates
-          # into scope; --in-diff restricts mutants to this PR's changed lines.
           # cargo-mutants 27.1.0 forwards CLI --features to every per-package
           # `cargo test`, so pass test-helpers only when every member declares
           # it; otherwise crates without the feature fail the baseline build.
+          # --features must precede `--` to reach the baseline build command.
           feature_args=()
-          if cargo metadata --no-deps --format-version 1 | jq -e '[.packages[] | .features | has("test-helpers")] | all' >/dev/null; then
+          if cargo metadata --no-deps --format-version 1 \
+              | jq -e '[.packages[] | .features | has("test-helpers")] | all' >/dev/null; then
             feature_args=(--features "test-helpers")
           fi
-          cargo mutants --workspace --in-diff mutation.diff --no-shuffle --timeout 120 "${feature_args[@]}" -- --config-file .config/nextest.toml 2>&1 | tee mutants-output.txt
+          # Two deterministic round-robin shards split the --in-diff planned
+          # set without truncation. Round-robin matters: measured times are ~8s
+          # for the first 50 mutants and ~20s for the rest, so the default
+          # `slice` algorithm would unbalance the legs; round-robin evens them.
+          cargo mutants --workspace --in-diff mutation.diff --no-shuffle --shard ${{ matrix.shard }}/2 --sharding round-robin --timeout 120 "${feature_args[@]}" -- --config-file .config/nextest.toml 2>&1 | tee mutants-output.txt
+          exit_code=${PIPESTATUS[0]}
+          # Expose the real exit code as a step output. On cancellation the step
+          # is killed before this line, so the output stays empty and the shard
+          # context also receives outcome=cancelled / job.status=cancelled. Do
+          # NOT `exit "$exit_code"` here: that would flip a completed `missed`
+          # run (exit 2) into a failed step and change the existing quality gate.
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
 
       - name: Explain Windows-only mutation skip
         if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only == 'true'
@@ -167,62 +209,172 @@ jobs:
             echo "(Windows runner) in pr-checks.yml via 'vx just test-window-background'."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Parse mutation results
-        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true' && always()
-        id: results
+      - name: Record shard context
+        id: context
+        if: always()
+        env:
+          # Real runner contexts travel with the artifact so the aggregate job
+          # can judge completeness without trusting a counter alone.
+          SHARD_EXIT_CODE: ${{ steps.mutants.outputs.exit_code }}
+          MUTANTS_STEP_OUTCOME: ${{ steps.mutants.outcome }}
+          MUTANTS_STEP_CONCLUSION: ${{ steps.mutants.conclusion }}
+          JOB_STATUS: ${{ job.status }}
+          CHANGED_SKIP: ${{ steps.changed.outputs.skip }}
+          CHANGED_WINDOWS_ONLY: ${{ steps.changed.outputs.windows_only }}
         run: |
-          count_mutants() {
-            # grep prints 0 but exits 1 for an empty file; do not append another 0.
-            count=$(grep -c "." "$1" 2>/dev/null || true)
-            echo "${count:-0}"
-          }
-          caught=$(count_mutants mutants.out/caught.txt)
-          missed=$(count_mutants mutants.out/missed.txt)
-          timeout=$(count_mutants mutants.out/timeout.txt)
-          unviable=$(count_mutants mutants.out/unviable.txt)
-          score=N/A
-          if [ "$((caught + missed))" -gt 0 ]; then
-            score="$(( caught * 100 / (caught + missed) ))%"
+          mkdir -p mutants.out
+          # A Windows-only diff skips the mutants step but is an intentional
+          # skip, not a partial leg: both shards must report skip=true so the
+          # aggregate job suppresses the parser/gate instead of rejecting the
+          # (legitimately empty) result set.
+          effective_skip="$CHANGED_SKIP"
+          if [ "$CHANGED_WINDOWS_ONLY" = "true" ]; then
+            effective_skip=true
           fi
-          echo "caught=$caught" >> "$GITHUB_OUTPUT"
-          echo "missed=$missed" >> "$GITHUB_OUTPUT"
-          echo "timeout=$timeout" >> "$GITHUB_OUTPUT"
-          echo "unviable=$unviable" >> "$GITHUB_OUTPUT"
-          echo "score=$score" >> "$GITHUB_OUTPUT"
+          printf '{"shard":%s,"shards":2,"exit_code":"%s","step_outcome":"%s","step_conclusion":"%s","job_status":"%s","skip":"%s","windows_only":"%s"}\n' \
+            "${{ matrix.shard }}" "$SHARD_EXIT_CODE" "$MUTANTS_STEP_OUTCOME" \
+            "$MUTANTS_STEP_CONCLUSION" "$JOB_STATUS" "$effective_skip" "$CHANGED_WINDOWS_ONLY" \
+            > mutants.out/shard_meta.json
+
+      - name: Record zero-candidate proof
+        id: zero_candidates
+        if: always() && steps.changed.outputs.skip != 'true'
+        env:
+          SHARD_EXIT_CODE: ${{ steps.mutants.outputs.exit_code }}
+          MUTANTS_STEP_OUTCOME: ${{ steps.mutants.outcome }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEAD_SHA: ${{ github.sha }}
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          mkdir -p mutants.out
+          # cargo-mutants 27.1.0 logs "No mutants to filter" when --in-diff
+          # selects zero mutatable lines. That line is the producer's POSITIVE
+          # evidence: absent artifacts alone could also mean a corrupt or lost
+          # upload, and must never be mistaken for a legitimate empty set.
+          zero=false
+          if [ "$MUTANTS_STEP_OUTCOME" = "success" ] \
+              && [ "$SHARD_EXIT_CODE" = "0" ] \
+              && [ -f mutants-output.txt ] \
+              && grep -qF "No mutants to filter" mutants-output.txt \
+              && [ ! -e mutants.out/mutants.json ] \
+              && [ ! -e mutants.out/outcomes.json ]; then
+            zero=true
+          fi
+          diff_sha256=$(sha256sum mutation.diff | cut -d' ' -f1)
+          # Ship the exact diff so the report job can recompute the hash and
+          # bind the proof to this run's input, not just to a self-claim.
+          cp mutation.diff mutants.out/mutation.diff
+          printf '{"schema":1,"zero_candidates":%s,"shard":%s,"shards":2,"run_id":"%s","run_attempt":"%s","head_sha":"%s","diff_sha256":"%s","cargo_mutants_exit_code":"%s","no_mutants_signal":"No mutants to filter","mutants_found":0}\n' \
+            "$zero" "$SHARD_INDEX" "$RUN_ID" "$RUN_ATTEMPT" "$HEAD_SHA" \
+            "$diff_sha256" "$SHARD_EXIT_CODE" \
+            > mutants.out/zero_candidates.json
+
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: mutants.out/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ===========================================================================
+  # Aggregate the two shards into ONE honest, complete result set (PR only)
+  # ===========================================================================
+  report:
+    name: Mutation Report
+    runs-on: ubuntu-latest
+    needs: incremental
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download shard results
+        uses: actions/download-artifact@v7
+        with:
+          pattern: mutation-shard-*
+          path: shards
+          merge-multiple: false
+
+      - name: Aggregate shard results
+        id: aggregate
+        if: always()
+        env:
+          # The matrix job's authoritative result. A cancelled/failed leg must
+          # never be aggregated into a scored "complete" report.
+          SHARD_RESULT: ${{ needs.incremental.result }}
+        run: |
+          python3 scripts/ci/aggregate_mutation_shards.py \
+            --shards-dir shards \
+            --output mutants.out \
+            --expect-shards 2 \
+            --shard-result "$SHARD_RESULT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --head-sha "$GITHUB_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      # A legitimate empty --in-diff set (changed Rust lines outside the
+      # examined crates) produces zero mutants on both shards: cargo-mutants
+      # logs "No mutants to filter", exits 0 and writes no mutants.json or
+      # outcomes.json. Each shard uploads a run-bound zero_candidates.json
+      # attestation plus the exact mutation.diff. The aggregator verifies that
+      # proof and emits an explicit empty/skip N/A instead of `incomplete`;
+      # corrupt, missing or stale artifacts without it stay rejected. The gate
+      # is bypassed only for that verified shape -- never as a scored pass.
+      - name: Report empty in-diff mutation set
+        if: always() && steps.aggregate.outputs.empty == 'true'
+        run: |
+          {
+            echo "## Mutation Testing Results"
+            echo ""
+            echo "**Status:** N/A (empty changed-line mutation set)"
+            echo ""
+            echo "Both mutation shards completed successfully with exit code 0, but"
+            echo "the --in-diff selector produced no mutatable lines in the examined"
+            echo "crates. There is no mutation score to report. This is an intentional"
+            echo "N/A, not a failed, cancelled or all-caught result; the report gate"
+            echo "is skipped only for this verified empty shape."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Parse via a unit-tested helper instead of inline `grep -c ... || echo 0`.
+      # The old pattern returned "0\n0" on empty files (grep -c prints 0 AND
+      # exits 1), which crashed $((caught + missed)) under `bash -e`, and a
+      # missing/empty result set was reported as score=100 "all caught".
+      - name: Parse mutation results
+        if: always() && steps.aggregate.outputs.skip != 'true'
+        id: results
+        env:
+          # The aggregate step derives these from the shards' persisted runner
+          # contexts and the matrix result, so a cancelled/partial leg still
+          # reaches the parser as an authoritative interruption signal.
+          MUTANTS_EXIT_CODE: ${{ steps.aggregate.outputs.exit_code }}
+          MUTANTS_STEP_OUTCOME: ${{ steps.aggregate.outputs.step_outcome }}
+          MUTANTS_STEP_CONCLUSION: ${{ steps.aggregate.outputs.step_conclusion }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 scripts/ci/parse_mutation_results.py \
+            --mutants-out mutants.out \
+            --exit-code "$MUTANTS_EXIT_CODE" \
+            --step-outcome "$MUTANTS_STEP_OUTCOME" \
+            --step-conclusion "$MUTANTS_STEP_CONCLUSION" \
+            --job-status "$JOB_STATUS" \
+            --output "$GITHUB_OUTPUT" \
+            --comment-file mutation-comment.md
 
       - name: Comment PR with mutation results
-        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true' && always() && github.event.pull_request.head.repo.full_name == github.repository
+        if: always() && steps.aggregate.outputs.skip != 'true' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         uses: actions/github-script@v9
         with:
           script: |
-            const caught = '${{ steps.results.outputs.caught }}';
-            const missed = '${{ steps.results.outputs.missed }}';
-            const score = '${{ steps.results.outputs.score }}';
-            const timeout = '${{ steps.results.outputs.timeout }}';
-
-            let body = '## Mutation Testing Results\n\n';
-            body += `| Metric | Value |\n|--------|-------|\n`;
-            body += `| Caught | ${caught} |\n`;
-            body += `| Missed | ${missed} |\n`;
-            body += `| Timeout | ${timeout} |\n`;
-            body += `| **Score** | **${score}** |\n\n`;
-
-            if (score === 'N/A') {
-              body += 'No mutants completed. Check the mutation testing step for baseline or setup errors.\n';
-            } else if (parseInt(missed) > 0) {
-              body += '> Some mutations survived. Consider adding tests for the affected code paths.\n';
-              body += '<details><summary>Missed mutants</summary>\n\n```\n';
-              const fs = require('fs');
-              if (fs.existsSync('mutants.out/missed.txt')) {
-                body += fs.readFileSync('mutants.out/missed.txt', 'utf-8').substring(0, 3000);
-              }
-              body += '\n```\n</details>\n';
-            } else if (parseInt(timeout) > 0) {
-              body += 'Some mutations timed out. Check the mutation testing logs.\n';
-            } else {
-              body += 'All mutations were caught by tests.\n';
-            }
+            const fs = require('fs');
+            // The comment body is rendered by scripts/ci/parse_mutation_results.py,
+            // which never claims a passing score for a failed/no-baseline run.
+            const body = fs.existsSync('mutation-comment.md')
+              ? fs.readFileSync('mutation-comment.md', 'utf-8')
+              : '## Mutation Testing Results\n\nResult parsing produced no report; see the job log.\n';
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -251,22 +403,42 @@ jobs:
             }
 
       - name: Write mutation results to step summary
-        if: steps.changed.outputs.skip != 'true' && steps.changed.outputs.windows_only != 'true' && always()
+        if: always() && steps.aggregate.outputs.skip != 'true'
         run: |
           {
-            echo "## Mutation Testing Results"
-            echo ""
-            echo "| Metric | Value |"
-            echo "|--------|-------|"
-            echo "| Caught | ${{ steps.results.outputs.caught }} |"
-            echo "| Missed | ${{ steps.results.outputs.missed }} |"
-            echo "| Timeout | ${{ steps.results.outputs.timeout }} |"
-            echo "| **Score** | **${{ steps.results.outputs.score }}** |"
+            if [ -f mutation-comment.md ]; then
+              cat mutation-comment.md
+            else
+              echo "## Mutation Testing Results"
+              echo ""
+              echo "Result parsing produced no report; see the job log."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # A failed baseline, an error, a timeout, an incomplete (cancelled or
+      # partial) run, zero mutants or missing results must fail the check. This
+      # preserves the failure instead of publishing a false "all caught" pass.
+      # A COMPLETED run with missed mutants is a valid, honestly scored result:
+      # pass|missed means "usable report", NOT "quality passed". The repository
+      # has no numeric mutation-score threshold; the earlier claim that missed
+      # mutants fail via cargo-mutants' own exit code was inaccurate -- base
+      # 8edc987 piped to tee, captured PIPESTATUS and never re-raised it.
+      - name: Gate on valid mutation results
+        if: always() && steps.aggregate.outputs.skip != 'true'
+        env:
+          MUTATION_STATUS: ${{ steps.results.outputs.status }}
+          MUTATION_SUMMARY: ${{ steps.results.outputs.summary }}
+        run: |
+          echo "status=$MUTATION_STATUS"
+          echo "summary=$MUTATION_SUMMARY"
+          case "$MUTATION_STATUS" in
+            pass|missed) echo "Valid mutation result: $MUTATION_STATUS (see comment)" ;;
+            *) echo "::error::No valid mutation result ($MUTATION_STATUS): $MUTATION_SUMMARY"; exit 1 ;;
+          esac
 
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-results-incremental
           path: mutants.out/
@@ -296,7 +468,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.90.0
+        # Full scan also builds dev-dependencies (dcc-mcp-protocols, MSRV 1.95),
+        # so use the same fixed 1.98.0 toolchain as the incremental job.
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Install system dependencies
         run: |
@@ -364,7 +538,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.90.0
+        # Manual crate mode also builds dev-dependencies (dcc-mcp-protocols,
+        # MSRV 1.95), so use the same fixed 1.98.0 toolchain as the other jobs.
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Install system dependencies
         run: |

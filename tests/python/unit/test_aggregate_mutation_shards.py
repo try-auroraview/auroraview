@@ -1,0 +1,962 @@
+"""Regression guards for deterministic mutation sharding and honest aggregation.
+
+Run 40790621664 (head afbac389) hit the 60-minute cap at 195/200 mutants even
+though the same inputs finished 200/200 in 48m34s on run 40778843830. Runner
+variance (13.4s -> 17.0s per mutant, 154s -> 227s baseline) makes a single
+60-minute job non-deterministic. The fix keeps the whole planned mutant set but
+runs it as two deterministic round-robin shards, then merges them back into
+one result set judged by ``parse_mutation_results.py``.
+
+The selector is now ``--workspace --in-diff mutation.diff`` (main #540): only
+lines changed by the PR are mutated, across every workspace crate. The shard
+matrix still splits that planned set without truncation.
+
+These tests pin the contract:
+
+* a complete 2-shard round reproduces the original ``missed / 14 / 200``;
+* a truncated/cancelled leg yields ``incomplete / N/A`` and is rejected;
+* completeness is checked by mutant NAME (missing, duplicate, extra, missing
+  leg, denominator mismatch), never by a rounded-up counter;
+* the workflow really wires the changed-line selector, the shard matrix, the
+  aggregate step's runner contexts and the parser flags, and never raises the
+  timeout or drops work.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[3]
+_AGG = _ROOT / "scripts/ci/aggregate_mutation_shards.py"
+_PARSER = _ROOT / "scripts/ci/parse_mutation_results.py"
+_WORKFLOW = _ROOT / ".github/workflows/mutation-testing.yml"
+
+# The report job binds zero-candidate proofs to the real workflow run.
+_RUN_ID = "41624524383"
+_RUN_ATTEMPT = "1"
+_HEAD_SHA = "211445e7183312b3c3147d58b768d63a473aac09"
+_DIFF_TEXT = (
+    "diff --git a/src/webview/desktop/icon.rs b/src/webview/desktop/icon.rs\n"
+    "--- a/src/webview/desktop/icon.rs\n"
+    "+++ b/src/webview/desktop/icon.rs\n"
+    "@@ -1 +1 @@\n"
+    "+fn icon() {}\n"
+)
+_DIFF_SHA256 = hashlib.sha256(_DIFF_TEXT.encode("utf-8")).hexdigest()
+
+
+def _load(name: str, path: Path):  # noqa: ANN201
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _mutant(index: int) -> dict:
+    return {
+        "name": f"src/ipc/mod.rs:{index + 1}:5: replace f{index} with Default::default()",
+        "file": "src/ipc/mod.rs",
+        "genre": "FnValue",
+        "replacement": "Default::default()",
+    }
+
+
+def _outcome(index: int, summary: str) -> dict:
+    return {
+        "scenario": {"Mutant": {"name": _mutant(index)["name"], "file": "src/ipc/mod.rs"}},
+        "summary": summary,
+        "log_path": f"log/m{index}.log",
+        "diff_path": f"diff/m{index}.diff",
+        "phase_results": [
+            {"phase": "Build", "duration": 13.0, "process_status": "Success"},
+            {"phase": "Test", "duration": 3.0, "process_status": "Success"},
+        ],
+    }
+
+
+def _summaries(total: int = 200, caught: int = 28, unviable: int = 3) -> list[str]:
+    return (
+        ["CaughtMutant"] * caught
+        + ["Unviable"] * unviable
+        + ["MissedMutant"] * (total - caught - unviable)
+    )
+
+
+_COUNTER_BY_SUMMARY = {
+    "CaughtMutant": "caught",
+    "MissedMutant": "missed",
+    "Unviable": "unviable",
+    "Timeout": "timeout",
+    "Success": "success",
+}
+
+
+def _counters(entries: list[dict]) -> dict[str, int]:
+    counters = dict.fromkeys(("caught", "missed", "timeout", "unviable", "success"), 0)
+    for entry in entries:
+        key = _COUNTER_BY_SUMMARY.get(entry.get("summary"))
+        if key:
+            counters[key] += 1
+    return {**counters, "total_mutants": len(entries)}
+
+
+def build_shards(
+    shards_dir: Path,
+    *,
+    total: int = 200,
+    n: int = 2,
+    drop_last: int = 0,
+    cancel_shard: int | None = None,
+    skip_all: bool = False,
+    extra_outcomes: int = 0,
+    duplicate_index: bool = False,
+    wrong_denominator: bool = False,
+) -> Path:
+    """Write N shard artifacts that mimic real cargo-mutants output."""
+    shards_dir.mkdir(parents=True, exist_ok=True)
+    planned = [_mutant(i) for i in range(total)]
+    summaries = _summaries(total)
+    baseline = {"scenario": "Baseline", "summary": "Success"}
+    keep = total - drop_last
+
+    for k in range(n):
+        directory = shards_dir / f"mutation-shard-{k}"
+        directory.mkdir()
+        # mutants.json is written BEFORE the run: a truncated run still lists
+        # every mutant planned for this shard.
+        sub_planned = [planned[i] for i in range(k, total, n)]
+        indices = [i for i in range(k, total, n) if i < keep]
+        entries = [_outcome(i, summaries[i]) for i in indices]
+        cancelled = cancel_shard is not None and k == cancel_shard
+
+        if skip_all:
+            (directory / "shard_meta.json").write_text(
+                json.dumps(
+                    {
+                        "shard": k,
+                        "shards": n,
+                        "exit_code": "",
+                        "step_outcome": "skipped",
+                        "step_conclusion": "skipped",
+                        "job_status": "success",
+                        "skip": "true",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            continue
+
+        for offset in range(extra_outcomes):
+            extra = _outcome(1000 + offset, "MissedMutant")
+            extra["scenario"]["Mutant"]["name"] = f"not/planned.rs:{offset}:1: invented"
+            if k == 0:
+                entries.append(extra)
+
+        data = {
+            "outcomes": [baseline] + entries,
+            "start_time": "2026-10-28T23:00:00Z",
+            "end_time": None if cancelled else "2026-10-28T23:30:00Z",
+            "cargo_mutants_version": "27.1.0",
+            **_counters(entries),
+        }
+        (directory / "mutants.json").write_text(json.dumps(sub_planned), encoding="utf-8")
+        (directory / "outcomes.json").write_text(json.dumps(data), encoding="utf-8")
+        for name, predicate in (
+            ("caught.txt", "CaughtMutant"),
+            ("missed.txt", "MissedMutant"),
+            ("timeout.txt", "Timeout"),
+            ("unviable.txt", "Unviable"),
+        ):
+            lines = [e["scenario"]["Mutant"]["name"] for e in entries if e["summary"] == predicate]
+            (directory / name).write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+        meta = {
+            "shard": 0 if duplicate_index else k,
+            "shards": n + 1 if wrong_denominator else n,
+            "exit_code": "" if cancelled else "2",
+            "step_outcome": "cancelled" if cancelled else "success",
+            "step_conclusion": "cancelled" if cancelled else "success",
+            "job_status": "cancelled" if cancelled else "success",
+            "skip": "false",
+        }
+        (directory / "shard_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    return shards_dir
+
+
+def _derive_after_aggregate(agg, parser, shards_dir: Path, out: Path, **kwargs) -> dict[str, str]:
+    kwargs.setdefault("run_id", _RUN_ID)
+    kwargs.setdefault("run_attempt", _RUN_ATTEMPT)
+    kwargs.setdefault("head_sha", _HEAD_SHA)
+    summary = agg.aggregate(shards_dir, out, expect_shards=2, **kwargs)
+    values = parser.derive(
+        out,
+        summary["exit_code"],
+        step_outcome=summary["step_outcome"],
+        step_conclusion=summary["step_outcome"],
+        job_status="success",
+    )
+    return {"_summary": summary, **values}
+
+
+# --- Complete aggregate keeps the real result -------------------------------
+
+
+def test_complete_two_shard_round_reproduces_missed_14_of_200(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards")
+    out = tmp_path / "mutants.out"
+
+    summary = agg.aggregate(shards, out, expect_shards=2, shard_result="success")
+    assert summary["complete"] is True
+    assert summary["skip"] is False
+    assert summary["planned"] == 200
+    assert summary["recorded"] == 200
+    assert summary["exit_code"] == "2"
+    assert summary["problems"] == []
+
+    merged = json.loads((out / "outcomes.json").read_text(encoding="utf-8"))
+    assert merged["end_time"] is not None
+    assert merged["total_mutants"] == 200
+    assert merged["caught"] == 28
+    assert merged["missed"] == 169
+    assert merged["unviable"] == 3
+    assert len(merged["outcomes"]) == 201  # 1 baseline + 200 mutants
+    planned_names = {m["name"] for m in json.loads((out / "mutants.json").read_text())}
+    assert len(planned_names) == 200
+
+    values = parser.derive(
+        out, "2", step_outcome="success", step_conclusion="success", job_status="success"
+    )
+    assert values["status"] == "missed"
+    assert values["score"] == "14"
+    assert values["total"] == "200"
+    assert values["caught"] == "28"
+    assert values["missed"] == "169"
+    assert values["status"] in parser._VALID_STATUSES
+    comment = parser.render_comment(values)
+    assert "**Status:** `missed`" in comment
+    assert "**Score** | **14**" in comment
+
+
+def test_cli_end_to_end_with_exact_workflow_flags(tmp_path):
+    """Both CLIs are driven exactly as the workflow drives them."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards")
+    out = tmp_path / "mutants.out"
+    gh_output = tmp_path / "gh_output.txt"
+    comment = tmp_path / "comment.md"
+
+    assert (
+        agg.main(
+            [
+                "--shards-dir",
+                str(shards),
+                "--output",
+                str(out),
+                "--expect-shards",
+                "2",
+                "--shard-result",
+                "success",
+                "--github-output",
+                str(gh_output),
+            ]
+        )
+        == 0
+    )
+    aggregate_outputs = dict(
+        line.split("=", 1) for line in gh_output.read_text(encoding="utf-8").splitlines()
+    )
+    assert aggregate_outputs["skip"] == "false"
+    assert aggregate_outputs["exit_code"] == "2"
+    assert aggregate_outputs["step_outcome"] == "success"
+    assert aggregate_outputs["step_conclusion"] == "success"
+
+    assert (
+        parser.main(
+            [
+                "--mutants-out",
+                str(out),
+                "--exit-code",
+                aggregate_outputs["exit_code"],
+                "--step-outcome",
+                aggregate_outputs["step_outcome"],
+                "--step-conclusion",
+                aggregate_outputs["step_conclusion"],
+                "--job-status",
+                "success",
+                "--output",
+                str(gh_output),
+                "--comment-file",
+                str(comment),
+            ]
+        )
+        == 0
+    )
+    all_outputs = dict(
+        line.split("=", 1) for line in gh_output.read_text(encoding="utf-8").splitlines()
+    )
+    assert all_outputs["status"] == "missed"
+    assert all_outputs["score"] == "14"
+    assert all_outputs["total"] == "200"
+    assert "**Status:** `missed`" in comment.read_text(encoding="utf-8")
+
+
+# --- Any incomplete leg must be rejected ------------------------------------
+
+
+def test_truncated_shard_is_incomplete_and_rejected(tmp_path):
+    """Reproduce run 40790621664: 195/200 planned mutants, one cancelled leg."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", drop_last=5, cancel_shard=1)
+    out = tmp_path / "mutants.out"
+
+    values = _derive_after_aggregate(agg, parser, shards, out, shard_result="cancelled")
+    summary = values["_summary"]
+    assert summary["complete"] is False
+    assert summary["planned"] == 200
+    assert summary["recorded"] == 195
+    assert summary["exit_code"] == ""
+    assert any("planned mutants have no outcome" in p for p in summary["problems"])
+    assert json.loads((out / "outcomes.json").read_text())["end_time"] is None
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["total"] == "195"
+    assert values["status"] not in parser._VALID_STATUSES
+    assert "NOT a passing result" in parser.render_comment(values)
+
+
+def test_missing_shard_artifact_forces_incomplete(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards")
+    import shutil
+
+    shutil.rmtree(shards / "mutation-shard-1")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["complete"] is False
+    assert values["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("extra_outcomes", [1, 3])
+def test_unplanned_outcomes_force_incomplete(tmp_path, extra_outcomes):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", extra_outcomes=extra_outcomes)
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert any("not in the planned set" in p for p in values["_summary"]["problems"])
+    assert values["status"] == "incomplete"
+
+
+def test_duplicate_shard_index_forces_incomplete(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", duplicate_index=True)
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["complete"] is False
+    assert values["status"] == "incomplete"
+
+
+def test_wrong_shard_denominator_forces_incomplete(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    shards = build_shards(tmp_path / "shards", wrong_denominator=True)
+    summary = agg.aggregate(shards, tmp_path / "out", expect_shards=2)
+    assert any("denominator mismatch" in p for p in summary["problems"])
+    assert summary["complete"] is False
+
+
+@pytest.mark.parametrize("result", ["cancelled", "failure", "timed_out"])
+def test_non_success_matrix_result_forces_incomplete_even_with_full_artifacts(tmp_path, result):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out", shard_result=result)
+    assert values["_summary"]["complete"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+def test_all_shards_skipped_sets_skip_output_without_a_fake_result(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    shards = build_shards(tmp_path / "shards", skip_all=True)
+    out = tmp_path / "out"
+    gh_output = tmp_path / "gh_output.txt"
+    assert (
+        agg.main(
+            [
+                "--shards-dir",
+                str(shards),
+                "--output",
+                str(out),
+                "--expect-shards",
+                "2",
+                "--shard-result",
+                "success",
+                "--github-output",
+                str(gh_output),
+            ]
+        )
+        == 0
+    )
+    outputs = dict(line.split("=", 1) for line in gh_output.read_text().splitlines())
+    assert outputs["skip"] == "true"
+
+
+@pytest.mark.parametrize("matrix_result", ["success", "failure", "cancelled"])
+def test_one_skip_artifact_cannot_hide_a_missing_shard(tmp_path, matrix_result):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", skip_all=True)
+    missing = shards / "mutation-shard-1"
+    (missing / "shard_meta.json").unlink()
+    missing.rmdir()
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["skip"] is False
+    assert values["_summary"]["complete"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+@pytest.mark.parametrize("matrix_result", ["", "failure", "cancelled", "timed_out", "skipped"])
+def test_skip_artifacts_cannot_override_an_unsuccessful_matrix(tmp_path, matrix_result):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", skip_all=True)
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("shard", 0),  # duplicate index
+        ("shard", 2),  # unexpected index
+        ("shards", 3),
+        ("shards", None),
+        ("job_status", "failure"),
+        ("job_status", "cancelled"),
+        ("step_outcome", "cancelled"),
+        ("step_conclusion", "failure"),
+        ("step_outcome", ""),
+    ],
+)
+def test_skip_requires_complete_valid_runner_metadata(tmp_path, field, value):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", skip_all=True)
+    path = shards / "mutation-shard-1" / "shard_meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta[field] = value
+    path.write_text(json.dumps(meta), encoding="utf-8")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+# --- Legitimate empty --in-diff set -> explicit N/A, never incomplete -------
+
+
+def _zero_candidate_proof(k: int, *, n: int = 2, **overrides) -> dict:
+    """The producer attestation written by a shard's cargo-mutants step."""
+    proof = {
+        "schema": 1,
+        "zero_candidates": True,
+        "shard": k,
+        "shards": n,
+        "run_id": _RUN_ID,
+        "run_attempt": _RUN_ATTEMPT,
+        "head_sha": _HEAD_SHA,
+        "diff_sha256": _DIFF_SHA256,
+        "cargo_mutants_exit_code": "0",
+        "no_mutants_signal": "No mutants to filter",
+        "mutants_found": 0,
+    }
+    proof.update(overrides)
+    return proof
+
+
+def build_empty_shards(
+    shards_dir: Path,
+    *,
+    n: int = 2,
+    with_proof: bool = True,
+    with_diff: bool = True,
+    artifact_mode: str = "absent",
+) -> Path:
+    """Two shards that finished a zero-mutant ``--in-diff`` run.
+
+    This is the real PR #537 shape: cargo-mutants logs ``No mutants to filter``,
+    exits 0 and writes neither ``mutants.json`` nor ``outcomes.json``. Each leg
+    uploads ``shard_meta.json``, the exact ``mutation.diff`` and a run-bound
+    ``zero_candidates.json`` attestation. ``artifact_mode='corrupt'`` writes
+    present-but-invalid artifacts to prove that file absence alone is never
+    accepted as evidence of an empty set.
+    """
+    shards_dir.mkdir(parents=True, exist_ok=True)
+    for k in range(n):
+        directory = shards_dir / f"mutation-shard-{k}"
+        directory.mkdir()
+        meta = {
+            "shard": k,
+            "shards": n,
+            "exit_code": "0",
+            "step_outcome": "success",
+            "step_conclusion": "success",
+            "job_status": "success",
+            "skip": "false",
+            "windows_only": "false",
+        }
+        (directory / "shard_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        if with_diff:
+            # Exact bytes: write_text() would translate \n to \r\n on Windows
+            # and change the SHA-256 that the producer's sha256sum sees.
+            (directory / "mutation.diff").write_bytes(_DIFF_TEXT.encode("utf-8"))
+        if with_proof:
+            (directory / "zero_candidates.json").write_text(
+                json.dumps(_zero_candidate_proof(k, n=n)), encoding="utf-8"
+            )
+        if artifact_mode == "corrupt":
+            for name in ("mutants.json", "outcomes.json"):
+                (directory / name).write_text("{ not valid json", encoding="utf-8")
+        elif artifact_mode != "absent":
+            raise ValueError(f"unknown artifact_mode: {artifact_mode}")
+    return shards_dir
+
+
+def _assert_rejected(agg, parser, shards: Path, tmp_path: Path) -> None:
+    """Every counterexample must stay an incomplete / N/A run, not an N/A skip."""
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    summary = values["_summary"]
+    assert summary["empty"] is False
+    assert summary["skip"] is False
+    assert summary["complete"] is False
+    assert summary["problems"], "real defects must remain reported"
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["status"] not in parser._VALID_STATUSES
+
+
+def test_legitimate_empty_in_diff_set_is_explicit_skip_na(tmp_path):
+    """GREEN: a producer-attested zero-mutant run is an honest N/A."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    out = tmp_path / "mutants.out"
+
+    summary = agg.aggregate(
+        shards,
+        out,
+        expect_shards=2,
+        shard_result="success",
+        run_id=_RUN_ID,
+        run_attempt=_RUN_ATTEMPT,
+        head_sha=_HEAD_SHA,
+    )
+    assert summary["empty"] is True
+    assert summary["skip"] is True
+    assert summary["complete"] is False
+    assert summary["planned"] == 0
+    assert summary["recorded"] == 0
+    assert summary["exit_code"] == ""
+    assert summary["step_outcome"] == "success"
+    assert summary["problems"] == []
+
+    # No fake scored result: the merged output is still unusable by the parser,
+    # proving the gate is skipped as an honest N/A rather than rounded to pass.
+    merged = json.loads((out / "outcomes.json").read_text(encoding="utf-8"))
+    assert merged["end_time"] is None
+    assert merged["total_mutants"] == 0
+    values = parser.derive(
+        out, "", step_outcome="success", step_conclusion="success", job_status="success"
+    )
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["status"] not in parser._VALID_STATUSES
+
+
+def test_empty_in_diff_cli_writes_skip_and_empty_outputs(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    shards = build_empty_shards(tmp_path / "shards")
+    gh_output = tmp_path / "gh_output.txt"
+    assert (
+        agg.main(
+            [
+                "--shards-dir",
+                str(shards),
+                "--output",
+                str(tmp_path / "mutants.out"),
+                "--expect-shards",
+                "2",
+                "--shard-result",
+                "success",
+                "--run-id",
+                _RUN_ID,
+                "--run-attempt",
+                _RUN_ATTEMPT,
+                "--head-sha",
+                _HEAD_SHA,
+                "--github-output",
+                str(gh_output),
+            ]
+        )
+        == 0
+    )
+    outputs = dict(
+        line.split("=", 1) for line in gh_output.read_text(encoding="utf-8").splitlines()
+    )
+    assert outputs["skip"] == "true"
+    assert outputs["empty"] == "true"
+    assert outputs["exit_code"] == ""
+    assert outputs["step_outcome"] == "success"
+
+
+def test_both_legs_with_corrupt_json_are_not_an_empty_diff(tmp_path):
+    """RED: corrupt artifacts must never be inferred as a zero-mutant run."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards", artifact_mode="corrupt")
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_missing_artifacts_without_producer_proof_are_rejected(tmp_path):
+    """RED: two legs missing every result file with no proof stay incomplete."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards", with_proof=False)
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_single_leg_without_producer_proof_is_rejected(tmp_path):
+    """RED: one leg without the attestation cannot hide behind its sibling."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "zero_candidates.json").unlink()
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_single_leg_without_mutation_diff_is_rejected(tmp_path):
+    """RED: the proof must be verifiable against an uploaded diff."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "mutation.diff").unlink()
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+def test_legs_with_different_diffs_are_rejected(tmp_path):
+    """RED: both legs must have operated on exactly the same input diff."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "mutation.diff").write_bytes(
+        (_DIFF_TEXT + "# second leg drift\n").encode("utf-8")
+    )
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"schema": 2},
+        {"zero_candidates": False},
+        {"shard": 0},
+        {"shards": 3},
+        {"run_id": "another-run"},
+        {"run_attempt": "2"},
+        {"head_sha": "0000000000000000000000000000000000000000"},
+        {"diff_sha256": "0" * 64},
+        {"diff_sha256": "not-a-hash"},
+        {"cargo_mutants_exit_code": "2"},
+        {"no_mutants_signal": "Found 200 mutants"},
+        {"mutants_found": 1},
+    ],
+)
+def test_tampered_producer_proof_is_rejected(tmp_path, override):
+    """RED: a forged or stale attestation is not evidence of an empty set."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    path = shards / "mutation-shard-1" / "zero_candidates.json"
+    proof = _zero_candidate_proof(1)
+    proof.update(override)
+    path.write_text(json.dumps(proof), encoding="utf-8")
+    _assert_rejected(agg, parser, shards, tmp_path)
+
+
+@pytest.mark.parametrize("missing", ["run_id", "run_attempt", "head_sha"])
+def test_empty_diff_requires_the_current_run_binding(tmp_path, missing):
+    """RED: without the report job's run identity, no empty verdict is issued."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    shards = build_empty_shards(tmp_path / "shards")
+    bindings = {"run_id": _RUN_ID, "run_attempt": _RUN_ATTEMPT, "head_sha": _HEAD_SHA}
+    bindings[missing] = ""
+    summary = agg.aggregate(
+        shards, tmp_path / "out", expect_shards=2, shard_result="success", **bindings
+    )
+    assert summary["empty"] is False
+    assert summary["skip"] is False
+    assert summary["complete"] is False
+
+
+@pytest.mark.parametrize("matrix_result", ["cancelled", "failure", "timed_out", "skipped"])
+def test_cancelled_or_failed_matrix_is_not_an_empty_diff(tmp_path, matrix_result):
+    """RED: cancellation/failure is never laundered into an N/A skip."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"exit_code": ""},
+        {"exit_code": "1"},
+        {"exit_code": "2"},
+        {"exit_code": "3"},
+        {"step_outcome": "cancelled"},
+        {"step_outcome": "failure"},
+        {"step_conclusion": "cancelled"},
+        {"job_status": "cancelled"},
+        {"job_status": "failure"},
+        {"skip": "true"},
+        {"windows_only": "true"},
+        {"shards": 3},
+        {"shard": 0},
+        {"shard": 2},
+    ],
+)
+def test_empty_diff_detection_rejects_unhealthy_leg(tmp_path, mutation):
+    """RED: one bad leg keeps the empty set rejected as incomplete."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    path = shards / "mutation-shard-1" / "shard_meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta.update(mutation)
+    path.write_text(json.dumps(meta), encoding="utf-8")
+
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    summary = values["_summary"]
+    assert summary["empty"] is False
+    assert summary["skip"] is False
+    assert summary["complete"] is False
+    assert summary["problems"], "real defects must remain reported"
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+    assert values["status"] not in parser._VALID_STATUSES
+
+
+@pytest.mark.parametrize("matrix_result", ["", "failure", "cancelled", "timed_out", "skipped"])
+def test_empty_diff_detection_rejects_unsuccessful_matrix(tmp_path, matrix_result):
+    """RED: a failed/cancelled shard matrix can never become an N/A."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    values = _derive_after_aggregate(
+        agg, parser, shards, tmp_path / "out", shard_result=matrix_result
+    )
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+    assert values["score"] == "N/A"
+
+
+def test_empty_diff_detection_rejects_missing_shard(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    import shutil
+
+    shards = build_empty_shards(tmp_path / "shards")
+    shutil.rmtree(shards / "mutation-shard-1")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["status"] == "incomplete"
+
+
+def test_empty_diff_detection_rejects_missing_shard_meta(tmp_path):
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    (shards / "mutation-shard-1" / "shard_meta.json").unlink()
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["status"] == "incomplete"
+
+
+def test_one_leg_with_real_mutants_is_not_an_empty_diff(tmp_path):
+    """RED: a run that lost one leg's artifacts is broken, not an empty diff."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_shards(tmp_path / "shards", total=4)
+    leg = shards / "mutation-shard-1"
+    for name in ("mutants.json", "outcomes.json"):
+        (leg / name).unlink()
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["_summary"]["planned"] > 0
+    assert values["status"] == "incomplete"
+
+
+def test_declared_skip_and_empty_diff_shapes_are_not_conflated(tmp_path):
+    """RED: one Windows-only skip leg plus one empty leg stays incomplete."""
+    agg = _load("aggregate_mutation_shards", _AGG)
+    parser = _load("parse_mutation_results", _PARSER)
+    shards = build_empty_shards(tmp_path / "shards")
+    path = shards / "mutation-shard-1" / "shard_meta.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta.update(
+        {
+            "skip": "true",
+            "step_outcome": "skipped",
+            "step_conclusion": "skipped",
+            "exit_code": "",
+        }
+    )
+    path.write_text(json.dumps(meta), encoding="utf-8")
+    values = _derive_after_aggregate(agg, parser, shards, tmp_path / "out")
+    assert values["_summary"]["empty"] is False
+    assert values["_summary"]["skip"] is False
+    assert values["status"] == "incomplete"
+
+
+# --- The workflow must really wire all of this ------------------------------
+
+
+def _parse_step_block(text: str) -> str:
+    match = re.search(
+        r"- name: Parse mutation results\n(?P<body>.*?)(?=\n      - name: |\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert match, "Parse mutation results step not found"
+    return match.group("body")
+
+
+def _job_block(text: str, name: str) -> str:
+    match = re.search(
+        r"^  " + re.escape(name) + r":\n(?P<body>.*?)(?=^  [a-zA-Z0-9_-]+:|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, f"job {name!r} not found"
+    return match.group("body")
+
+
+def test_workflow_splits_the_in_diff_mutant_set_into_two_deterministic_shards():
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    block = _job_block(text, "incremental")
+    assert re.search(r"matrix:\s*\n\s+shard: \[0, 1\]", block)
+    assert "fail-fast: false" in block
+    assert "--shard ${{ matrix.shard }}/2" in block
+    assert "--sharding round-robin" in block
+    timeout = re.search(r"timeout-minutes:\s*(\d+)", block)
+    assert timeout and int(timeout.group(1)) == 60, "timeout must not be raised again"
+    # The merged #540 selector scopes every crate to the PR's changed lines.
+    # --file unions with examine_globs and cannot narrow; file_args is gone.
+    assert "--workspace --in-diff mutation.diff" in block
+    assert "file_args" not in block
+    assert "--file " not in block
+    assert "head -20" not in block, "the selector must not truncate changed files"
+    # No sampling or mutant-limit escape hatch.
+    assert "--mutant-limit" not in block
+    assert "--shard 0/1" not in block
+    # The manual single-crate shard input is preserved.
+    assert 'shard_arg="--shard ${{ github.event.inputs.shard }}"' in text
+
+
+def test_workflow_aggregate_and_parse_bind_real_runner_contexts():
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    report = _job_block(text, "report")
+    assert "needs: incremental" in report
+    aggregate_step = re.search(
+        r"- name: Aggregate shard results\n(?P<body>.*?)(?=\n      - name: |\Z)",
+        report,
+        re.DOTALL,
+    )
+    assert aggregate_step
+    assert "SHARD_RESULT: ${{ needs.incremental.result }}" in aggregate_step.group("body")
+    for flag in (
+        "--shards-dir",
+        "--output",
+        "--expect-shards",
+        "--shard-result",
+        "--github-output",
+    ):
+        assert flag in aggregate_step.group("body")
+
+    # Shard legs persist the authoritative runner contexts into the artifact.
+    shard_step = re.search(
+        r"- name: Record shard context\n(?P<body>.*?)(?=\n      - name: |\Z)",
+        _job_block(text, "incremental"),
+        re.DOTALL,
+    )
+    assert shard_step
+    for expression in (
+        "${{ steps.mutants.outputs.exit_code }}",
+        "${{ steps.mutants.outcome }}",
+        "${{ steps.mutants.conclusion }}",
+        "${{ job.status }}",
+        "${{ steps.changed.outputs.skip }}",
+        "${{ steps.changed.outputs.windows_only }}",
+    ):
+        assert expression in shard_step.group("body")
+
+    # A Windows-only diff skips the mutants step on both legs. Both shards must
+    # persist skip=true so the aggregate job suppresses the parser/gate rather
+    # than rejecting an intentionally empty result set.
+    assert "CHANGED_WINDOWS_ONLY" in shard_step.group("body")
+    assert "$CHANGED_WINDOWS_ONLY" in shard_step.group("body")
+
+    parse_step = _parse_step_block(text)
+    for env_name, expression in (
+        ("MUTANTS_EXIT_CODE", "${{ steps.aggregate.outputs.exit_code }}"),
+        ("MUTANTS_STEP_OUTCOME", "${{ steps.aggregate.outputs.step_outcome }}"),
+        ("MUTANTS_STEP_CONCLUSION", "${{ steps.aggregate.outputs.step_conclusion }}"),
+        ("JOB_STATUS", "${{ job.status }}"),
+    ):
+        assert re.search(rf"{env_name}:\s*{re.escape(expression)}", parse_step)
+    for flag, env_name in (
+        ("--exit-code", "MUTANTS_EXIT_CODE"),
+        ("--step-outcome", "MUTANTS_STEP_OUTCOME"),
+        ("--step-conclusion", "MUTANTS_STEP_CONCLUSION"),
+        ("--job-status", "JOB_STATUS"),
+    ):
+        assert re.search(rf"{flag} \"\${env_name}\"", parse_step)
+
+
+def test_workflow_gate_and_skip_semantics_preserved():
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    assert re.search(r"pass\|missed\)\s+echo \"Valid mutation result", text)
+    assert "::error::No valid mutation result" in text
+    assert "steps.aggregate.outputs.skip != 'true'" in text
+    # #540's Windows-only handoff survives the merge: a gated diff skips the
+    # Linux mutants step with an explicit explanation, never a false score.
+    assert "windows_only != 'true'" in text
+    assert "windows_only == 'true'" in text
+    assert "pr-checks.yml" in text
+    assert "test-window-background" in text
+    # The fully merged artifact keeps the original public artifact name.
+    assert "name: mutation-results-incremental" in text
+    assert "pattern: mutation-shard-*" in text

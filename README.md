@@ -473,8 +473,10 @@ from auroraview import run_desktop
 # Use custom icon
 run_desktop(
     title="My App",
+    width=1024,
+    height=768,
     url="http://localhost:3000",
-    icon="path/to/my-icon.png"  # Custom icon path
+    icon="path/to/my-icon.png",  # Custom icon path
 )
 ```
 
@@ -487,6 +489,13 @@ run_desktop(
 | **Best Practice** | Use a square image; non-square images will be stretched |
 
 > **Tip**: For best results across all Windows UI elements, provide a 32×32 PNG with transparency.
+
+> **Note — runtime window icon vs. packaged executable icon**: `run_desktop(icon=...)`
+> and `WebView.create(icon=...)` set the native window's title-bar and taskbar icon
+> at runtime. This is separate from the packaged executable icon configured with
+> `auroraview pack --icon ...` (or `[pack] icon` in `app.toml`), which is embedded
+> into the built `.exe` by the Windows resource compiler. Setting one does not set
+> the other; a custom runtime icon requires no packaging step.
 
 **Nuke integration (Qt-based):**
 ```python

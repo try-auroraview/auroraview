@@ -319,6 +319,14 @@ path = "tests/rust/lifecycle_integration_tests.rs"
 [[test]]
 name = "timer_integration"
 path = "tests/rust/timer_integration_tests.rs"
+# These integration tests call Timer::should_tick, which is exposed only under
+# `feature = "test-helpers"` (integration tests are a separate crate, so the
+# library's `cfg(test)` is not set). Declare that requirement so no-feature
+# builds (e.g. cargo-mutants' unmutated baseline) skip this target cleanly
+# instead of failing to compile with E0599, while feature-enabled builds keep
+# every test case and assertion. Mirrors ipc_roundtrip_integration /
+# window_utils_integration, which require "python-bindings".
+required-features = ["test-helpers"]
 
 [[test]]
 name = "window_utils_integration"

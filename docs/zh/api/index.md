@@ -88,6 +88,20 @@ run_desktop(
 )
 ```
 
+通过 `icon=` 可自定义原生窗口图标（标题栏和任务栏）。支持格式：PNG（推荐）、
+ICO、JPEG、BMP、GIF。这是运行时窗口图标，与 `auroraview pack --icon` 设置的
+打包可执行文件图标不同。
+
+```python
+run_desktop(
+    title="我的应用",
+    width=1024,
+    height=768,
+    url="http://localhost:3000",
+    icon="path/to/my-icon.png",
+)
+```
+
 ### 遗留别名
 
 > **注意**: 以下遗留别名已不再可用：

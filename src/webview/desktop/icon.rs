@@ -55,3 +55,39 @@ pub fn load_window_icon(custom_icon: Option<&PathBuf>) -> Option<tao::window::Ic
 
     tao::window::Icon::from_rgba(rgba, width, height).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset_icon() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons/auroraview-32.png")
+    }
+
+    /// The default (embedded) icon always decodes into a real window Icon.
+    #[test]
+    fn default_icon_is_available() {
+        assert!(load_window_icon(None).is_some());
+    }
+
+    /// GH-528: a custom icon path is decoded into a real tao window Icon.
+    /// This exercises the genuine runtime window-icon path used by
+    /// window_builder (`with_window_icon`), not a stub or mock.
+    #[test]
+    fn custom_icon_decodes_into_window_icon() {
+        let path = asset_icon();
+        assert!(path.exists(), "test asset missing: {:?}", path);
+        assert!(load_window_icon(Some(&path)).is_some());
+    }
+
+    /// A missing/invalid custom icon falls back to the default icon.
+    #[test]
+    fn missing_custom_icon_falls_back_to_default() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons/__does_not_exist__.png");
+        assert!(
+            load_window_icon(Some(&path)).is_some(),
+            "must fall back to the default icon"
+        );
+    }
+}

@@ -45,10 +45,23 @@ def main(argv=None):
         sys.path.insert(0, str(site))
 
     # Import in this process. Spawning sys.executable would lose the bpy host.
+    import platform
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as dist_version
+
     import bpy
     import pytest
 
-    print("Blender host:", bpy.app.version_string, "Python:", sys.version)
+    try:
+        auroraview_version = dist_version("auroraview")
+    except PackageNotFoundError:
+        auroraview_version = "not-installed"
+
+    # GH-530: carry the exact tested combination in the CI log.
+    print("Blender host:", bpy.app.version_string)
+    print("Python:", sys.version)
+    print("OS:", platform.platform())
+    print("AuroraView:", auroraview_version)
     print("Background:", bpy.app.background, "Renderer validation: not_run")
     test_args = args.pytest_args
     if test_args and test_args[0] == "--":
