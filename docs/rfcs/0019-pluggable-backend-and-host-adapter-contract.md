@@ -231,7 +231,28 @@ if `wry::` or `tao::` reappears in a `pub fn` signature under `src/webview/backe
 
 ### 2.2 Follow-up 2 — replace `Option<u64>` handles with a typed `NativeHandle`
 
-**Status: not started, and now a contract-level decision.** `grep -rn NativeHandle --include=*.rs`
+**Status: typed `NativeHandle` migration not started; parent IPC conversion resolved
+without changing contract signatures ([#520](https://github.com/try-auroraview/auroraview/issues/520)).**
+
+For contract `1.x`, `Option<u64>` remains canonical at the `HostAdapter`,
+`HostInfo` and `SurfaceSpec` boundary. The legacy native `ChildInfo::parent_hwnd`
+field and `parse_hwnd()` retain `Option<isize>`. New code crossing from parent
+IPC into the contract calls `ChildInfo::parent_handle()` and propagates its
+`Result<Option<u64>, TryFromIntError>`: the single checked `u64::try_from`
+conversion preserves absent/nonnegative values and rejects negative ones.
+It does not silently reinterpret a sign bit, truncate a handle, or turn a
+conversion error into an absent parent. Native parsing still rejects values
+above `isize::MAX`; existing contract `u64` values are never forced through
+`isize`. A native consumer needing `isize` must check `isize::try_from` at its
+own boundary. This is a representation check, not native-window validation.
+
+`vx just test-parent-handle-contract` covers absent/zero/negative values,
+64-bit handles above `u32::MAX`, `isize::MAX`, native parser overflow, and
+unchanged `HostAdapter` → `HostInfo` → `SurfaceSpec` propagation. The following
+inventory and wider type-design options remain relevant to the separate
+typed-handle migration; this narrow conversion does not rewire surface creation.
+
+`grep -rn NativeHandle --include=*.rs`
 returns **zero hits**. There is no shared handle type — and, importantly, **no single handle
 representation either**. The tree carries three, and they disagree about signedness:
 

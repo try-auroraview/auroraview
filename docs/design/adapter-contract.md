@@ -297,6 +297,33 @@ a grep guard that fails the build if the two sides disagree. It caught the
 `DccType` and `BackendType` are both kept as deprecated shims, so nothing that
 compiles today breaks.
 
+### 7.1 Parent-handle representation at the contract boundary
+
+`HostAdapter::parent_handle()`, `HostInfo::parent_handle` and
+`SurfaceSpec::parent_handle` retain `Option<u64>` as their canonical contract
+representation. The existing native parent/child IPC API keeps
+`ChildInfo::parent_hwnd: Option<isize>` and `parse_hwnd() -> Option<isize>`.
+
+Use `ChildInfo::parent_handle() -> Result<Option<u64>, TryFromIntError>` once
+when entering the contract. It performs the checked `u64::try_from` conversion:
+`None` stays absent, nonnegative values (including zero) are preserved, and a
+negative value is an error. Propagate that error before constructing an adapter
+or surface; do not turn it into `None` and silently run detached. This checks
+representation only, not whether a native window exists. The CLI continues to
+treat zero as an absent parent/owner handle.
+
+The native parser rejects decimal or hexadecimal values outside the current
+platform's `isize` range. Conversely, a handle already supplied as `u64` by a
+host adapter does not need an `isize` round-trip: preserve it in the contract.
+Any backend that requires `isize` must use `isize::try_from` and report overflow
+before calling native APIs.
+
+The 64-bit boundary cases and the host-to-surface contract are covered by
+`crates/auroraview-core/tests/parent_handle_contract_tests.rs`, run with
+`vx just test-parent-handle-contract`. This resolves the narrow conversion
+decision in [#520](https://github.com/try-auroraview/auroraview/issues/520);
+the broader typed `NativeHandle` migration remains in RFC 0019 §2.2.
+
 ## 8. Deliberately out of scope
 
 - **No repository creation, no org changes, no code migration** (S2; needs owner
