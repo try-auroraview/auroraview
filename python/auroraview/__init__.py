@@ -334,6 +334,7 @@ from .api import create_webview, run_app
 # - Use AuroraView for HWND-based apps (Unreal Engine)
 # - Use run_desktop() for standalone desktop applications
 from .integration import AuroraView, Bridge, QtWebView
+from .core.retained_window import RetainedWindow
 from .ui import Element, ElementCollection, Menu, MenuBar, MenuItem, MenuItemType
 from .utils import (
     Automation,
@@ -536,6 +537,7 @@ __all__ = [
     "QtWebView",
     # HWND-based integration (Unreal Engine, non-Qt apps)
     "AuroraView",
+    "RetainedWindow",
     # Desktop standalone apps
     "run_desktop",
     "run_standalone",  # Legacy alias for run_desktop

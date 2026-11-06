@@ -19,6 +19,7 @@ use std::sync::Arc;
 use super::config::WebViewConfig;
 use super::event_loop::UserEvent;
 use super::webview_inner::WebViewInner;
+use super::window_control::{WindowCommand, WindowSnapshot};
 use crate::bindings::webview::py_dict_to_json;
 use crate::ipc::{IpcHandler, JsCallbackManager, MessageQueue, WebViewMessage};
 
@@ -151,10 +152,35 @@ pub struct AuroraView {
     pub(crate) js_callback_manager: Arc<JsCallbackManager>,
     /// Callback invoked when WebView2 HWND is created (Windows only)
     pub(crate) on_hwnd_created: Rc<RefCell<Option<Py<PyAny>>>>,
+    pub(crate) retained: Rc<RefCell<Option<Arc<super::window_control::RetainedShared>>>>,
     /// Cached HWND value (Windows only) - stored at AuroraView level
     /// so it can be accessed even when inner RefCell is borrowed
     #[cfg(target_os = "windows")]
     pub(crate) cached_hwnd: Rc<RefCell<Option<u64>>>,
+}
+
+impl AuroraView {
+    fn retained_command(&self, command: WindowCommand) -> Option<PyResult<()>> {
+        self.retained.borrow().as_ref().map(|shared| {
+            shared
+                .control
+                .enqueue(command)
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            if let Err(error) = shared.signal() {
+                tracing::warn!("Accepted retained command wake failed: {}", error);
+            }
+            Ok(())
+        })
+    }
+
+    fn retained_snapshot(&self) -> Option<PyResult<WindowSnapshot>> {
+        self.retained.borrow().as_ref().map(|shared| {
+            shared
+                .control
+                .snapshot()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+        })
+    }
 }
 
 #[pymethods]

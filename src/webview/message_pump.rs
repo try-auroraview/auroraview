@@ -128,6 +128,30 @@ pub fn process_messages_for_hwnd(hwnd_value: u64) -> bool {
     }
 }
 
+/// Dispatch messages without inferring close source; the retained HWND subclass
+/// owns classification before any default window procedure can destroy it.
+#[cfg(all(target_os = "windows", feature = "python-bindings"))]
+pub fn process_retained_messages_for_hwnd(hwnd_value: u64) {
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+
+    let hwnd = HWND(hwnd_value as *mut c_void);
+    let mut message = MSG::default();
+    // SAFETY: the owner thread dispatches messages for its own live HWND only.
+    unsafe {
+        for _ in 0..64 {
+            if !PeekMessageW(&mut message, Some(hwnd), 0, 0, PM_REMOVE).as_bool() {
+                break;
+            }
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
 /// Process all pending Windows messages for all windows (non-blocking)
 ///
 /// This is useful when you don't have a specific HWND to target.

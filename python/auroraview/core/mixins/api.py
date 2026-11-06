@@ -105,13 +105,18 @@ class WebViewApiMixin:
         """Select the native callback owner, or the packed Python registry."""
         getter = getattr(self, "_get_active_core", None)
         core = getter() if getter is not None else self._core
-        if core is None and is_packed_mode():
+        if core is None and (
+            is_packed_mode()
+            or getattr(getattr(self, "_retained_window", None), "state", None) == "new"
+        ):
             return None
         self._check_api_core_owner(core)
         return core
 
     def _check_api_core_owner(self, core: Any) -> None:
         if core is None:
+            if getattr(getattr(self, "_retained_window", None), "state", None) == "new":
+                return
             raise RuntimeError("WebView has no native core for API registration")
         check_owner = getattr(self, "_is_core_owner", None)
         if check_owner is not None and not check_owner(core):
@@ -260,9 +265,11 @@ class WebViewApiMixin:
         with self._bind_lock:
             core = self._api_registration_core()
             self._check_api_core_owner(core)
-            core.register_protocol(scheme, handler)
+            if core is not None:
+                core.register_protocol(scheme, handler)
             self._protocol_handlers[scheme] = handler
-            self._protocol_core_bindings.setdefault(id(core), {})[scheme] = handler
+            if core is not None:
+                self._protocol_core_bindings.setdefault(id(core), {})[scheme] = handler
         logger.debug(f"Registered custom protocol: {scheme}")
 
     def _emit_call_result_js(self, payload: Dict[str, Any]) -> None:
@@ -544,6 +551,10 @@ class WebViewApiMixin:
                 _t0 = _time.monotonic()
                 # Resolve on execution, so hot-reloads also affect queued work.
                 current_func = self._bound_functions.get(method, func)
+                retained = getattr(self, "_retained_window", None)
+                guard = retained._control.begin_callback() if retained is not None else None
+                if retained is not None and guard is None:
+                    return
                 try:
                     if host_backend is not None and not host_backend.is_main_thread():
                         raise RuntimeError("Host dispatcher did not execute on the main thread")
@@ -565,7 +576,6 @@ class WebViewApiMixin:
                 except Exception as exc:
                     payload = _error(exc)
                     logger.exception("Error in bound call '%s'", method)
-
                 # Telemetry must not prevent a Promise from settling.
                 try:
                     if not payload["ok"] and hasattr(self, "_telemetry_on_error"):
@@ -574,7 +584,12 @@ class WebViewApiMixin:
                         self._telemetry_on_ipc_call(method, (_time.monotonic() - _t0) * 1000.0)
                 except Exception:
                     logger.debug("Failed to record IPC telemetry", exc_info=True)
-                _finish(payload)
+                try:
+                    _finish(payload)
+                finally:
+                    if guard is not None:
+                        guard.finish()
+                        retained._schedule_host_poll()
 
             try:
                 if dispatcher is not None:

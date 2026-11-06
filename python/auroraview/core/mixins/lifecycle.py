@@ -122,6 +122,14 @@ class WebViewLifecycleMixin:
 
     def _command_target(self) -> Any:
         """Return the active owner core or its cached, send-safe command proxy."""
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            with self._async_core_lock:
+                core = self._async_core
+            proxy = getattr(self, "_core_proxies", {}).get(id(core)) if core is not None else None
+            if proxy is None:
+                raise RuntimeError("Retained window command proxy is not ready")
+            return proxy
         core = self._get_active_core()
         if core is None:
             raise RuntimeError("WebView has no native core")
@@ -333,6 +341,12 @@ class WebViewLifecycleMixin:
             >>> # When running in a packed .exe, show() automatically switches
             >>> # to API server mode. All bind_call() handlers work seamlessly.
         """
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            if wait is True:
+                raise RuntimeError("Retained windows require non-blocking show()")
+            retained.show()
+            return
         # Check for packed mode first - transparent to developers
         from ..packed import (
             dump_cli_metadata,
@@ -382,6 +396,10 @@ class WebViewLifecycleMixin:
         only. If already running, the call is ignored. After close, construct a
         fresh WebView instead of reusing native state from an earlier window.
         """
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            retained.show()
+            return
         self._show_non_blocking()
 
     def _show_non_blocking(self) -> None:
@@ -501,6 +519,8 @@ class WebViewLifecycleMixin:
             >>> webview.show_blocking()  # Blocks until window closes
             >>> print("Window was closed")
         """
+        if getattr(self, "_retained_window", None) is not None:
+            raise RuntimeError("Retained windows require non-blocking show()")
         logger.info(f"Showing WebView (blocking): {self._title}")
         logger.info("Calling _core.show()...")
         self._check_open()
@@ -569,6 +589,9 @@ class WebViewLifecycleMixin:
             ... else:
             ...     print("Timeout waiting for WebView")
         """
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            return retained.wait(0 if timeout is None else timeout)
         event = getattr(self, "_closed_event", None)
         if event is None:
             return not getattr(self, "_is_running", False) and not self.close_pending
@@ -603,6 +626,10 @@ class WebViewLifecycleMixin:
         targets or registry cleanup; the first failure is raised afterwards.
         ``close_pending`` and ``wait(0)`` expose incomplete delivery.
         """
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            retained.close()
+            return
         lock = getattr(self, "_lifecycle_lock", None)
         if lock is None:
             lock = self._lifecycle_lock = threading.RLock()

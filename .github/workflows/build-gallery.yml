@@ -187,7 +187,8 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.wheel-artifact }}
-          path: dist/
+          # dist/ is restored from the build cache and may contain older wheels.
+          path: test-results/gallery-wheel/input/
 
       - name: Install auroraview wheel
         shell: bash
@@ -195,7 +196,7 @@ jobs:
           GALLERY_SOURCE_HEAD: ${{ github.sha }}
           GALLERY_WHEEL_ARTIFACT: ${{ matrix.wheel-artifact }}
         run: |
-          vx just gallery-ci-stage-wheel dist
+          vx just gallery-ci-stage-wheel test-results/gallery-wheel/input
 
       - name: Download Gallery frontend artifact
         uses: actions/download-artifact@v8

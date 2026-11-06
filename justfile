@@ -271,6 +271,20 @@ prepare-blender-test-site wheel site python_version:
 test-blender-host blender site:
     "{{blender}}" --background --factory-startup --python-exit-code 1 --python scripts/ci/run_blender_tests.py -- --test-site "{{site}}" -- tests/python/integration/test_blender_integration.py -v --tb=short --timeout=60
 
+# Visible Blender probe: additional arguments follow Blender's `--` separator.
+[windows]
+blender-loading-probe blender *ARGS:
+    & "{{blender}}" --factory-startup --python-exit-code 1 --python examples/blender_loading_probe/__init__.py -- {{ARGS}}
+
+lint-blender-loading-probe:
+    vx uvx ruff check examples/blender_loading_probe
+    vx uvx ruff format --check examples/blender_loading_probe
+
+# Use the repo's Python Playwright/CDP integration to measure arbitrary pages.
+[windows]
+measure-blender-loading-probe blender *ARGS:
+    vx uv run --no-sync python examples/blender_loading_probe/measure.py "{{blender}}" {{ARGS}}
+
 # Run all tests
 [unix]
 test:
@@ -380,6 +394,18 @@ test-rust-fast: nextest-install
 test-rust-fast:
     @echo "Skipping cargo-nextest integration path on Windows due to abi3/PyO3 DLL constraints."
     @echo "Use Linux CI for full Rust integration coverage."
+
+# Run the retained-window control and native tests explicitly on Windows.
+[windows]
+test-retained-window:
+    $env:PYO3_PYTHON = (vx python -c "import sys; print(sys.executable)")
+    vx cargo test --test retained_window_integration --features "python-bindings win-webview2" -- --nocapture
+
+test-retained-python:
+    $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"; vx uv run python tests/python/run_retained_tests.py tests/python/unit/test_retained_window.py
+
+test-retained-native:
+    $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"; vx uv run python tests/python/run_retained_tests.py tests/python/integration/test_retained_window_native.py
 
 # Test Python unit tests without slow markers
 test-python-unit-fast:

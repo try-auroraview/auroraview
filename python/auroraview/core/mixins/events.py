@@ -291,15 +291,24 @@ class WebViewEventMixin:
         user_callback = callback
 
         def invoke(*args: Any, **kwargs: Any) -> Any:
-            with self._event_handlers_lock:
-                if (
-                    not active[0]
-                    or getattr(self, "_events_closed", False)
-                    or getattr(self, "_close_requested", False)
-                    or generation != getattr(self, "_event_generation", 0)
-                ):
-                    return None
-            return user_callback(*args, **kwargs)
+            retained = getattr(self, "_retained_window", None)
+            guard = retained._control.begin_callback() if retained is not None else None
+            if retained is not None and guard is None:
+                return None
+            try:
+                with self._event_handlers_lock:
+                    if (
+                        not active[0]
+                        or getattr(self, "_events_closed", False)
+                        or getattr(self, "_close_requested", False)
+                        or generation != getattr(self, "_event_generation", 0)
+                    ):
+                        return None
+                return user_callback(*args, **kwargs)
+            finally:
+                if guard is not None:
+                    guard.finish()
+                    retained._schedule_host_poll()
 
         def route(*args: Any, **kwargs: Any) -> Any:
             with self._event_handlers_lock:
@@ -361,6 +370,11 @@ class WebViewEventMixin:
             if not hasattr(self, "_event_connections"):
                 self._event_connections = {}
             self._event_connections[conn_id] = (event_str, callback, active)
+            if event_str == "window_command_failed":
+                diagnostics = getattr(self, "_retained_failure_handlers", None)
+                if diagnostics is None:
+                    diagnostics = self._retained_failure_handlers = {}
+                diagnostics[conn_id] = user_callback
         logger.debug(f"Registered callback for event: {event_str} (conn_id: {conn_id})")
 
         # Register with core (if available - packed mode may not have core)
@@ -423,6 +437,7 @@ class WebViewEventMixin:
             connection = connections.get(conn_id)
             if connection is not None and connection[0] == event_str:
                 _name, callback, active = connections.pop(conn_id)
+                getattr(self, "_retained_failure_handlers", {}).pop(conn_id, None)
                 active[0] = False
                 handlers = self._event_handlers.get(event_str, [])
                 if callback in handlers:

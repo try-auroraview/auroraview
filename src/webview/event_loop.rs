@@ -29,6 +29,20 @@ use wry::WebView as WryWebView;
 
 use crate::ipc::{MessageQueue, WebViewMessage};
 use crate::webview::js_assets;
+#[cfg(feature = "python-bindings")]
+use crate::webview::window_control::{
+    QueuedCommand, RetainedShared, WindowCommand, WindowSnapshot,
+};
+
+#[cfg(feature = "python-bindings")]
+#[derive(Default)]
+struct PendingWindowState {
+    minimized: Option<(bool, u64)>,
+    maximized: Option<(bool, u64)>,
+    fullscreen: Option<(bool, u64)>,
+    deferred: Vec<QueuedCommand>,
+    sent_visibility_seq: Option<u64>,
+}
 
 #[cfg(feature = "python-bindings")]
 use crate::ipc::{IpcHandler, WindowEventType};
@@ -386,7 +400,8 @@ fn process_webview_message(
     message: &WebViewMessage,
     webview: &WryWebView,
     window: Option<&Window>,
-    state: &EventLoopState,
+    state: Option<&EventLoopState>,
+    #[cfg(feature = "python-bindings")] retained: Option<&RetainedShared>,
 ) {
     match message {
         WebViewMessage::EvalJs(script) => {
@@ -454,8 +469,14 @@ fn process_webview_message(
             }
         }
         WebViewMessage::Close => {
+            #[cfg(feature = "python-bindings")]
+            if let Some(shared) = retained {
+                shared.control.close();
+            }
             tracing::info!("[EventLoop] Close message received, requesting exit");
-            state.request_exit();
+            if let Some(state) = state {
+                state.request_exit();
+            }
             if let Some(win) = window {
                 win.set_visible(false);
             }
@@ -464,6 +485,375 @@ fn process_webview_message(
 }
 
 impl WebViewEventHandler {
+    /// A finite slice of the legacy business queue. Native calls execute
+    /// outside EventLoopState's mutex because COM may synchronously enter a
+    /// Python callback which in turn needs the event-loop state.
+    fn process_queue_batch(
+        state: &Arc<Mutex<EventLoopState>>,
+        #[cfg(feature = "python-bindings")] retained: Option<&RetainedShared>,
+    ) -> usize {
+        let (queue, webview) = match state.lock() {
+            Ok(guard) => (guard.message_queue.clone(), guard.webview.clone()),
+            Err(_) => return 0,
+        };
+        let mut count = 0;
+        while count < 64 {
+            #[cfg(feature = "python-bindings")]
+            if retained.is_some_and(|shared| shared.control.intent().close) {
+                break;
+            }
+            let Some(message) = queue.pop() else { break };
+            count += 1;
+            match message {
+                WebViewMessage::Close => {
+                    #[cfg(feature = "python-bindings")]
+                    if let Some(shared) = retained {
+                        shared.control.close();
+                        break;
+                    }
+                    if let Ok(guard) = state.lock() {
+                        guard.request_exit();
+                        if let Some(window) = &guard.window {
+                            window.set_visible(false);
+                        }
+                    }
+                    break;
+                }
+                WebViewMessage::SetVisible(visible) => {
+                    #[cfg(feature = "python-bindings")]
+                    if let Some(shared) = retained {
+                        if visible {
+                            let _ = shared.control.show(false);
+                        } else {
+                            shared.control.hide();
+                        }
+                        continue;
+                    }
+                    if let Ok(guard) = state.lock() {
+                        if let Some(window) = &guard.window {
+                            window.set_visible(visible);
+                        }
+                    }
+                }
+                other => {
+                    if let Some(webview) = &webview {
+                        if let Ok(webview) = webview.lock() {
+                            process_webview_message(
+                                &other,
+                                &webview,
+                                None,
+                                None,
+                                #[cfg(feature = "python-bindings")]
+                                retained,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    #[cfg(feature = "python-bindings")]
+    fn emit_retained(state: &Arc<Mutex<EventLoopState>>, event: &str, data: serde_json::Value) {
+        let (handler, queue) = match state.lock() {
+            Ok(guard) => (guard.ipc_handler.clone(), guard.message_queue.clone()),
+            Err(_) => return,
+        };
+        if let Some(handler) = handler {
+            let message = crate::ipc::IpcMessage {
+                event: event.to_string(),
+                data: data.clone(),
+                id: None,
+            };
+            if let Err(error) = handler.handle_message(message) {
+                if !error.contains("No handler registered") {
+                    tracing::warn!(event, "Retained event callback failed: {}", error);
+                }
+            }
+        }
+        queue.push(WebViewMessage::EmitEvent {
+            event_name: event.to_string(),
+            data,
+        });
+    }
+
+    #[cfg(feature = "python-bindings")]
+    fn snapshot(window: &Window, hwnd: Option<u64>, version: u64) -> WindowSnapshot {
+        let inner = window.inner_size();
+        let outer = window.outer_size();
+        let position = window.outer_position().ok();
+        #[cfg(target_os = "windows")]
+        let visible = hwnd.is_some_and(|value| {
+            use std::ffi::c_void;
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+            // SAFETY: this is the owner thread and the HWND is checked by Win32.
+            unsafe { IsWindowVisible(HWND(value as *mut c_void)).as_bool() }
+        });
+        #[cfg(not(target_os = "windows"))]
+        let visible = window.is_visible();
+        WindowSnapshot {
+            version,
+            hwnd,
+            title: window.title(),
+            x: position.as_ref().map_or(0, |p| p.x),
+            y: position.as_ref().map_or(0, |p| p.y),
+            width: inner.width,
+            height: inner.height,
+            outer_width: outer.width,
+            outer_height: outer.height,
+            visible,
+            focused: window.is_focused(),
+            minimized: window.is_minimized(),
+            maximized: window.is_maximized(),
+            fullscreen: window.fullscreen().is_some(),
+        }
+    }
+
+    #[cfg(feature = "python-bindings")]
+    fn command_retained(
+        window: &Window,
+        command: &WindowCommand,
+        seq: u64,
+        pending: &mut PendingWindowState,
+    ) -> Result<(), String> {
+        let hidden = !window.is_visible();
+        let deferred = hidden
+            && matches!(
+                command,
+                WindowCommand::Minimize
+                    | WindowCommand::Maximize
+                    | WindowCommand::Unmaximize
+                    | WindowCommand::ToggleMaximize
+                    | WindowCommand::Restore
+                    | WindowCommand::SetFullscreen(..)
+                    | WindowCommand::ToggleFullscreen
+            );
+        match command {
+            WindowCommand::Center => {
+                let monitor = window
+                    .primary_monitor()
+                    .or_else(|| window.current_monitor())
+                    .ok_or_else(|| "no monitor available".to_string())?;
+                let size = monitor.size();
+                let origin = monitor.position();
+                let outer = window.outer_size();
+                window.set_outer_position(tao::dpi::PhysicalPosition::new(
+                    origin.x + (size.width as i32 - outer.width as i32) / 2,
+                    origin.y + (size.height as i32 - outer.height as i32) / 2,
+                ));
+            }
+            WindowCommand::Move(x, y) => {
+                window.set_outer_position(tao::dpi::PhysicalPosition::new(*x, *y))
+            }
+            WindowCommand::Resize(width, height) => {
+                window.set_inner_size(tao::dpi::PhysicalSize::new(*width, *height))
+            }
+            WindowCommand::Minimize => {
+                if hidden {
+                    pending.minimized = Some((true, seq));
+                } else {
+                    window.set_minimized(true);
+                }
+            }
+            WindowCommand::Maximize => {
+                if hidden {
+                    pending.maximized = Some((true, seq));
+                } else {
+                    window.set_maximized(true);
+                }
+            }
+            WindowCommand::Unmaximize => {
+                if hidden {
+                    pending.maximized = Some((false, seq));
+                } else {
+                    window.set_maximized(false);
+                }
+            }
+            WindowCommand::ToggleMaximize => {
+                let current = pending
+                    .maximized
+                    .map_or(window.is_maximized(), |value| value.0);
+                if hidden {
+                    pending.maximized = Some((!current, seq));
+                } else {
+                    window.set_maximized(!current);
+                }
+            }
+            WindowCommand::Restore => {
+                if hidden {
+                    pending.minimized = Some((false, seq));
+                    pending.maximized = Some((false, seq));
+                    pending.fullscreen = Some((false, seq));
+                } else {
+                    window.set_minimized(false);
+                    window.set_maximized(false);
+                    window.set_fullscreen(None);
+                }
+            }
+            WindowCommand::SetFullscreen(value) => {
+                if hidden {
+                    pending.fullscreen = Some((*value, seq));
+                } else {
+                    window
+                        .set_fullscreen(value.then_some(tao::window::Fullscreen::Borderless(None)));
+                }
+            }
+            WindowCommand::ToggleFullscreen => {
+                let current = pending
+                    .fullscreen
+                    .map_or(window.fullscreen().is_some(), |value| value.0);
+                if hidden {
+                    pending.fullscreen = Some((!current, seq));
+                } else {
+                    window.set_fullscreen(
+                        (!current).then_some(tao::window::Fullscreen::Borderless(None)),
+                    );
+                }
+            }
+            WindowCommand::SetTitle(title) => window.set_title(title),
+            WindowCommand::SetAlwaysOnTop(value) => window.set_always_on_top(*value),
+            WindowCommand::SetResizable(value) => window.set_resizable(*value),
+            WindowCommand::SetDecorations(value) => window.set_decorations(*value),
+            WindowCommand::SetMinSize(width, height) => {
+                window.set_min_inner_size(Some(tao::dpi::PhysicalSize::new(*width, *height)))
+            }
+            WindowCommand::SetMaxSize(width, height) => {
+                window.set_max_inner_size(Some(tao::dpi::PhysicalSize::new(*width, *height)))
+            }
+            WindowCommand::Focus => window.set_focus(),
+        }
+        if deferred {
+            pending.deferred.push(QueuedCommand {
+                seq,
+                operation: command.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "python-bindings")]
+    fn process_retained(
+        state: &Arc<Mutex<EventLoopState>>,
+        shared: &RetainedShared,
+        pending: &mut PendingWindowState,
+    ) -> bool {
+        let intent = shared.control.intent();
+        if intent.close {
+            shared.control.cancel_dequeued(pending.deferred.drain(..));
+            if let Ok(guard) = state.lock() {
+                guard.should_exit.store(true, Ordering::SeqCst);
+                guard.message_queue.shutdown();
+                if let Some(window) = &guard.window {
+                    window.set_visible(false);
+                }
+            }
+            return true;
+        }
+        let commands = shared.control.take_commands(64);
+        if intent.seq == shared.control.applied_seq() && commands.is_empty() {
+            return false;
+        }
+        let Ok(guard) = state.lock() else {
+            return false;
+        };
+        let Some(window) = &guard.window else {
+            return false;
+        };
+        let mut failures = Vec::new();
+        let mut commands = commands.into_iter();
+        while let Some(command) = commands.next() {
+            if shared.control.intent().close {
+                shared
+                    .control
+                    .cancel_dequeued(std::iter::once(command).chain(commands));
+                break;
+            }
+            if let Err(error) =
+                Self::command_retained(window, &command.operation, command.seq, pending)
+            {
+                tracing::error!(
+                    operation = command.operation.name(),
+                    request_seq = command.seq,
+                    "Retained window command failed: {}",
+                    error
+                );
+                failures.push((command.operation.name(), command.seq, error));
+            }
+        }
+        // Native commands may synchronously run Win32/COM callbacks. The
+        // snapshot taken before that batch is no longer an authority for the
+        // visibility action at this boundary.
+        let intent = shared.control.intent();
+        if intent.close {
+            drop(guard);
+            for (operation, request_seq, error) in failures {
+                Self::emit_retained(
+                    state,
+                    "window_command_failed",
+                    serde_json::json!({
+                        "window_id": shared.window_id(),
+                        "operation": operation,
+                        "request_seq": request_seq,
+                        "message": error,
+                    }),
+                );
+            }
+            return Self::process_retained(state, shared, pending);
+        }
+        if intent.seq != shared.control.applied_seq()
+            && pending.sent_visibility_seq != Some(intent.seq)
+        {
+            window.set_visible(intent.visible);
+            if intent.visible {
+                if let Some((value, _)) = pending.minimized.take() {
+                    window.set_minimized(value);
+                }
+                if let Some((value, _)) = pending.maximized.take() {
+                    window.set_maximized(value);
+                }
+                if let Some((value, _)) = pending.fullscreen.take() {
+                    window
+                        .set_fullscreen(value.then_some(tao::window::Fullscreen::Borderless(None)));
+                }
+                if intent.focus {
+                    window.set_focus();
+                }
+                pending.deferred.clear();
+            }
+            pending.sent_visibility_seq = Some(intent.seq);
+        }
+        let version = shared
+            .control
+            .snapshot()
+            .map_or(1, |snapshot| snapshot.version + 1);
+        let snapshot = Self::snapshot(window, shared.control.hwnd(), version);
+        drop(guard);
+        if intent.seq != shared.control.applied_seq() {
+            if snapshot.visible == intent.visible {
+                shared.control.confirm(intent.seq, snapshot);
+            } else {
+                shared.control.update_snapshot(snapshot);
+            }
+        } else {
+            shared.control.update_snapshot(snapshot);
+        }
+        for (operation, request_seq, error) in failures {
+            Self::emit_retained(
+                state,
+                "window_command_failed",
+                serde_json::json!({
+                    "window_id": shared.window_id(),
+                    "operation": operation,
+                    "request_seq": request_seq,
+                    "message": error,
+                }),
+            );
+        }
+        false
+    }
+
     /// Create a new event handler
     pub fn new(state: Arc<Mutex<EventLoopState>>) -> Self {
         Self { state }
@@ -534,9 +924,28 @@ impl WebViewEventHandler {
     /// * `state` - The event loop state
     /// * `auto_show` - Whether to automatically show the window
     pub fn run_blocking(
+        event_loop: EventLoop<UserEvent>,
+        state: Arc<Mutex<EventLoopState>>,
+        auto_show: bool,
+    ) {
+        Self::run_blocking_inner(event_loop, state, auto_show, None);
+    }
+
+    #[cfg(all(feature = "python-bindings", target_os = "windows"))]
+    pub fn run_blocking_retained(
+        event_loop: EventLoop<UserEvent>,
+        state: Arc<Mutex<EventLoopState>>,
+        shared: Arc<RetainedShared>,
+    ) {
+        Self::run_blocking_inner(event_loop, state, false, Some(shared));
+    }
+
+    fn run_blocking_inner(
         mut event_loop: EventLoop<UserEvent>,
         state: Arc<Mutex<EventLoopState>>,
         auto_show: bool,
+        #[cfg(feature = "python-bindings")] retained: Option<Arc<RetainedShared>>,
+        #[cfg(not(feature = "python-bindings"))] _retained: Option<()>,
     ) {
         tracing::info!(
             "[WARNING] [run_blocking] Starting event loop (blocking mode with run_return, auto_show={})",
@@ -546,6 +955,26 @@ impl WebViewEventHandler {
         // Create event loop proxy and store it in state
         tracing::info!("[WARNING] [run_blocking] Creating event loop proxy...");
         let proxy = event_loop.create_proxy();
+
+        #[cfg(feature = "python-bindings")]
+        if let Some(shared) = &retained {
+            shared.install_wake(proxy.clone());
+            #[cfg(target_os = "windows")]
+            {
+                let hwnd = state.lock().ok().and_then(|guard| guard.get_hwnd());
+                if let Some(hwnd) = hwnd {
+                    if let Ok(guard) = state.lock() {
+                        if let Some(window) = &guard.window {
+                            shared.control.ready(Self::snapshot(window, Some(hwnd), 1));
+                        }
+                    }
+                } else {
+                    shared
+                        .control
+                        .fail("retained native window has no HWND".into());
+                }
+            }
+        }
 
         tracing::info!("[WARNING] [run_blocking] Storing proxy in EventLoopState...");
         if let Ok(mut state_guard) = state.lock() {
@@ -635,6 +1064,8 @@ impl WebViewEventHandler {
         }
 
         let state_clone = state.clone();
+        #[cfg(feature = "python-bindings")]
+        let mut pending = PendingWindowState::default();
         let exit_code = event_loop.run_return(move |event, _, control_flow| {
             // CRITICAL: Use Poll mode for WebView2 compatibility on Windows
             // WebView2 requires continuous message pump processing for:
@@ -645,51 +1076,34 @@ impl WebViewEventHandler {
             // Poll mode ensures the Windows message loop runs continuously
             *control_flow = ControlFlow::Poll;
 
+            #[cfg(feature = "python-bindings")]
+            if let Some(shared) = &retained {
+                if Self::process_retained(&state_clone, shared, &mut pending) {
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+            }
+
             match event {
                 Event::UserEvent(UserEvent::ProcessMessages) => {
                     tracing::debug!("[EventLoop] Processing UserEvent::ProcessMessages");
-                    if let Ok(state_guard) = state_clone.lock() {
-                        let window_ref = state_guard.window.as_ref();
-                        let count = state_guard.message_queue.process_all(|message| {
-                            tracing::debug!("[EventLoop] Processing message: {:?}",
-                                match &message {
-                                    WebViewMessage::EvalJs(_) => "EvalJs",
-                                    WebViewMessage::EvalJsAsync { .. } => "EvalJsAsync",
-                                    WebViewMessage::EmitEvent { event_name, .. } => event_name.as_str(),
-                                    WebViewMessage::LoadUrl(_) => "LoadUrl",
-                                    WebViewMessage::LoadHtml(_) => "LoadHtml",
-                                    WebViewMessage::SetVisible(v) => if *v { "SetVisible(true)" } else { "SetVisible(false)" },
-                                    WebViewMessage::Reload => "Reload",
-                                    WebViewMessage::StopLoading => "StopLoading",
-                                    WebViewMessage::WindowEvent { event_type, .. } => event_type.as_str(),
-                                    WebViewMessage::Close => "Close",
-                                }
-                            );
-
-                            if let Some(webview_arc) = &state_guard.webview {
-                                if let Ok(webview) = webview_arc.lock() {
-                                    process_webview_message(&message, &webview, window_ref, &state_guard);
-                                } else {
-                                    tracing::error!("[EventLoop] Failed to lock WebView");
-                                }
-                            } else {
-                                tracing::warn!("[EventLoop] WebView is None");
-                            }
-                        });
-
-                        if count > 0 {
-                            tracing::debug!("[EventLoop] Processed {} messages via UserEvent", count);
-                        }
-
-                        if state_guard.should_exit() {
-                            tracing::info!("[EventLoop] Exit requested after processing messages, exiting");
-                            *control_flow = ControlFlow::Exit;
-                        }
-                    } else {
-                        tracing::error!("[EventLoop] Failed to lock state");
+                    let count = Self::process_queue_batch(
+                        &state_clone,
+                        #[cfg(feature = "python-bindings")]
+                        retained.as_deref(),
+                    );
+                    if count > 0 {
+                        tracing::debug!("[EventLoop] Processed {} messages via UserEvent", count);
+                    }
+                    if state_clone.lock().is_ok_and(|guard| guard.should_exit()) {
+                        *control_flow = ControlFlow::Exit;
                     }
                 }
                 Event::UserEvent(UserEvent::CloseWindow) => {
+                    #[cfg(feature = "python-bindings")]
+                    if let Some(shared) = &retained {
+                        shared.control.close();
+                    }
                     tracing::info!("[CLOSE] [EventLoop] UserEvent::CloseWindow received");
                     tracing::info!("[CLOSE] [EventLoop] Requesting window close via event loop");
 
@@ -761,6 +1175,22 @@ impl WebViewEventHandler {
                 }
                 Event::WindowEvent { event, .. } => {
                     tracing::debug!("Window event: {:?}", event);
+                    #[cfg(feature = "python-bindings")]
+                    if let Some(shared) = &retained {
+                        if matches!(event, WindowEvent::CloseRequested | WindowEvent::Destroyed) {
+                            shared.control.close();
+                        }
+                        if let Ok(guard) = state_clone.lock() {
+                            if let Some(window) = &guard.window {
+                                let version = shared.control.snapshot().map_or(1, |s| s.version + 1);
+                                shared.control.update_snapshot(Self::snapshot(window, shared.control.hwnd(), version));
+                            }
+                        }
+                        if matches!(event, WindowEvent::CloseRequested | WindowEvent::Destroyed) {
+                            *control_flow = ControlFlow::Exit;
+                        }
+                        return;
+                    }
                     let handler = WebViewEventHandler::new(state_clone.clone());
                     handler.handle_window_event(event);
 
@@ -804,6 +1234,14 @@ impl WebViewEventHandler {
                         if let Some(hwnd) = hwnd_opt {
                             // Process only this window's messages (isolated from DCC main thread)
                             // CRITICAL: Check return value for close intent
+                            #[cfg(feature = "python-bindings")]
+                            let should_close = if retained.is_some() {
+                                message_pump::process_retained_messages_for_hwnd(hwnd);
+                                retained.as_ref().is_some_and(|shared| shared.control.intent().close)
+                            } else {
+                                message_pump::process_messages_for_hwnd(hwnd)
+                            };
+                            #[cfg(not(feature = "python-bindings"))]
                             let should_close = message_pump::process_messages_for_hwnd(hwnd);
                             if should_close {
                                 tracing::info!("[EventLoop] Close detected from message pump, requesting exit");
@@ -819,25 +1257,17 @@ impl WebViewEventHandler {
                     }
 
                     // Process pending messages from the queue
-                    if let Ok(state_guard) = state_clone.lock() {
-                        let window_ref = state_guard.window.as_ref();
-                        let count = state_guard.message_queue.process_all(|message| {
-                            if let Some(webview_arc) = &state_guard.webview {
-                                if let Ok(webview) = webview_arc.lock() {
-                                    process_webview_message(&message, &webview, window_ref, &state_guard);
-                                }
-                            }
-                        });
-
-                        if count > 0 {
-                            tracing::debug!("Processed {} messages in MainEventsCleared", count);
-                        }
-
-                        // Check if we should exit
-                        if state_guard.should_exit() {
-                            tracing::info!("Exit requested in MainEventsCleared, exiting event loop gracefully");
-                            *control_flow = ControlFlow::Exit;
-                        }
+                    let count = Self::process_queue_batch(
+                        &state_clone,
+                        #[cfg(feature = "python-bindings")]
+                        retained.as_deref(),
+                    );
+                    if count > 0 {
+                        tracing::debug!("Processed {} messages in MainEventsCleared", count);
+                    }
+                    if state_clone.lock().is_ok_and(|guard| guard.should_exit()) {
+                        tracing::info!("Exit requested in MainEventsCleared, exiting event loop gracefully");
+                        *control_flow = ControlFlow::Exit;
                     }
 
                     // In Poll mode, add a small sleep to reduce CPU usage
@@ -879,21 +1309,11 @@ impl WebViewEventHandler {
             match event {
                 Event::UserEvent(UserEvent::ProcessMessages) => {
                     tracing::debug!("[OK] [poll_events_once] Processing messages");
-                    if let Ok(state_guard) = state_clone.lock() {
-                        let window_ref = state_guard.window.as_ref();
-                        state_guard.message_queue.process_all(|message| {
-                            if let Some(webview_arc) = &state_guard.webview {
-                                if let Ok(webview) = webview_arc.lock() {
-                                    process_webview_message(
-                                        &message,
-                                        &webview,
-                                        window_ref,
-                                        &state_guard,
-                                    );
-                                }
-                            }
-                        });
-                    }
+                    Self::process_queue_batch(
+                        &state_clone,
+                        #[cfg(feature = "python-bindings")]
+                        None,
+                    );
                 }
                 Event::WindowEvent { event, .. } => {
                     tracing::debug!("[OK] [poll_events_once] Window event: {:?}", event);

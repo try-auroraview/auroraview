@@ -3,12 +3,16 @@
 //! This module manages communication between Python and JavaScript,
 //! handling event callbacks and message routing.
 
+#[cfg(feature = "python-bindings")]
+use crate::webview::window_control::WindowControl;
 use dashmap::DashMap;
 #[cfg(feature = "python-bindings")]
 use pyo3::prelude::*;
 #[cfg(feature = "python-bindings")]
 use pyo3::{Py, PyAny};
 use std::sync::Arc;
+#[cfg(feature = "python-bindings")]
+use std::sync::OnceLock;
 
 // Re-export IpcMessage from backend module
 pub use super::backend::IpcMessage;
@@ -76,6 +80,8 @@ pub struct IpcHandler {
     /// JavaScript callback manager for async execution results
     #[cfg(feature = "python-bindings")]
     js_callback_manager: Option<Arc<JsCallbackManager>>,
+    #[cfg(feature = "python-bindings")]
+    retained_control: OnceLock<Arc<WindowControl>>,
 
     /// Message queue for sending events to WebView
     message_queue: Option<Arc<MessageQueue>>,
@@ -90,6 +96,8 @@ impl IpcHandler {
             python_callbacks: Arc::new(DashMap::new()),
             #[cfg(feature = "python-bindings")]
             js_callback_manager: None,
+            #[cfg(feature = "python-bindings")]
+            retained_control: OnceLock::new(),
             message_queue: None,
         }
     }
@@ -103,6 +111,13 @@ impl IpcHandler {
     #[cfg(feature = "python-bindings")]
     pub fn set_js_callback_manager(&mut self, manager: Arc<JsCallbackManager>) {
         self.js_callback_manager = Some(manager);
+    }
+
+    #[cfg(feature = "python-bindings")]
+    pub fn set_retained_control(&self, control: Arc<WindowControl>) -> Result<(), String> {
+        self.retained_control
+            .set(control)
+            .map_err(|_| "retained control already attached".to_string())
     }
 
     /// Register a Rust callback for an event
@@ -179,6 +194,15 @@ impl IpcHandler {
     pub fn handle_message(&self, message: IpcMessage) -> Result<serde_json::Value, String> {
         tracing::debug!("Handling IPC message: {}", message.event);
 
+        #[cfg(feature = "python-bindings")]
+        let _flight = if let Some(control) = self.retained_control.get() {
+            Some(control.begin_callback().ok_or_else(|| {
+                "retained window is closing; business IPC is no longer accepted".to_string()
+            })?)
+        } else {
+            None
+        };
+
         // Handle internal JS callback result event
         #[cfg(feature = "python-bindings")]
         if message.event == "__js_callback_result__" {
@@ -200,6 +224,15 @@ impl IpcHandler {
                 message.event
             );
             for callback in event_callbacks.value() {
+                if self
+                    .retained_control
+                    .get()
+                    .is_some_and(|control| control.intent().close)
+                {
+                    return Err(
+                        "retained window is closing; business IPC is no longer accepted".into(),
+                    );
+                }
                 tracing::info!("Calling Python callback for event: {}", message.event);
                 if let Err(e) = callback.call(message.data.clone()) {
                     tracing::error!("Python callback error: {}", e);
@@ -218,6 +251,16 @@ impl IpcHandler {
         // Then try Rust callbacks
         if let Some(event_callbacks) = self.callbacks.get(&message.event) {
             if let Some(callback) = event_callbacks.value().first() {
+                #[cfg(feature = "python-bindings")]
+                if self
+                    .retained_control
+                    .get()
+                    .is_some_and(|control| control.intent().close)
+                {
+                    return Err(
+                        "retained window is closing; business IPC is no longer accepted".into(),
+                    );
+                }
                 match callback(message.clone()) {
                     Ok(result) => return Ok(result),
                     Err(e) => {

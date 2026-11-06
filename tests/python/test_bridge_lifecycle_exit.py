@@ -9,6 +9,41 @@ import pytest
 pytest.importorskip("websockets")
 
 SOURCE = Path(__file__).resolve().parents[2] / "python/auroraview/integration/bridge.py"
+PACKAGE = SOURCE.parents[2]
+
+
+@pytest.mark.parametrize("core", ["missing", "legacy"])
+def test_bridge_package_import_does_not_require_retained_native_control(core):
+    child = r"""
+import importlib.abc
+import sys
+import types
+
+sys.path.insert(0, sys.argv[1])
+if sys.argv[2] == 'legacy':
+    sys.modules['auroraview._core'] = types.ModuleType('auroraview._core')
+else:
+    class NoCore(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == 'auroraview._core':
+                raise ModuleNotFoundError("No module named 'auroraview._core'")
+    sys.meta_path.insert(0, NoCore())
+
+from auroraview import Bridge, RetainedWindow
+
+bridge = Bridge(port=0, auto_start=False)
+assert not bridge.is_running
+assert callable(RetainedWindow)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", child, str(PACKAGE), core],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 CHILD = r"""
 import asyncio,atexit,contextlib,importlib.util,json,os,socket,sys,threading,time
 spec=importlib.util.spec_from_file_location('owned_bridge',sys.argv[1])

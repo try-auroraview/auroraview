@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AuroraView Loading Probe</title>
+<style>
+  body { margin: 40px; background: #173c2c; color: white; font: 18px system-ui; }
+  h1 { font-size: 30px; }
+  pre { font-size: 14px; white-space: pre-wrap; }
+</style>
+<h1>PAGE IS VISIBLE</h1>
+<p>Local HTML. No external resources or front-end framework.</p>
+<pre id="timing"></pre>
+<script>
+  const config = __PROBE_CONFIG__;
+  function report(event, entryTime = performance.now()) {
+    const page_ms = Math.round(entryTime * 100) / 100;
+    const since_open_ms = Math.round(
+      (performance.timeOrigin + entryTime - config.start) * 100
+    ) / 100;
+    document.querySelector('#timing').textContent +=
+      `${event}: ${since_open_ms} ms since open (${page_ms} ms in document)\n`;
+    // Independent of AuroraView's bridge: bridge startup cannot hide paint data.
+    fetch(config.endpoint + '/metrics', {
+      method: 'POST', mode: 'cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({run: config.run, event, page_ms, since_open_ms})
+    }).catch(error => console.error('Probe report failed', error));
+  }
+  report('script_started');
+  new PerformanceObserver(list => {
+    for (const entry of list.getEntries()) report(entry.name, entry.startTime);
+  }).observe({type: 'paint', buffered: true});
+  document.addEventListener('DOMContentLoaded', () => report('dom_ready'));
+  window.addEventListener('load', () => report('load'));
+  const bridgePoll = setInterval(() => {
+    if (window.auroraview?.isReady?.()) {
+      clearInterval(bridgePoll);
+      report('bridge_ready');
+    }
+  }, 10);
+  setTimeout(() => clearInterval(bridgePoll), 30000);
+</script>
+</html>

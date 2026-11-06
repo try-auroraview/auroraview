@@ -14,6 +14,8 @@ use super::js_assets;
 use super::lifecycle::LifecycleManager;
 use super::message_pump;
 use super::standalone;
+#[cfg(target_os = "windows")]
+use super::window_control::RetainedShared;
 use crate::ipc::{IpcHandler, MessageQueue};
 
 /// Internal WebView structure - supports both standalone and embedded modes
@@ -540,6 +542,32 @@ impl WebViewInner {
         WebViewEventHandler::run_blocking(event_loop, state, true);
 
         tracing::info!("Event loop exited");
+    }
+
+    /// Run a retained window while its owner keeps all native state local.
+    #[cfg(target_os = "windows")]
+    pub fn run_event_loop_retained(
+        &mut self,
+        shared: Arc<RetainedShared>,
+        handler: Arc<IpcHandler>,
+    ) {
+        let (Some(event_loop), Some(window)) = (self.event_loop.take(), self.window.take()) else {
+            shared
+                .control
+                .fail("retained native window was not created".into());
+            return;
+        };
+        #[allow(clippy::arc_with_non_send_sync)]
+        let state = Arc::new(Mutex::new(EventLoopState::new_without_webview(
+            window,
+            self.message_queue.clone(),
+        )));
+        if let Ok(mut guard) = state.lock() {
+            guard.set_webview(self.webview.clone());
+            guard.set_window_style_hints(self.window_style_hints);
+            guard.set_ipc_handler(handler);
+        }
+        WebViewEventHandler::run_blocking_retained(event_loop, state, shared);
     }
     /// Set whether the window should always be on top of other windows.
     ///

@@ -238,6 +238,13 @@ class AuroraView:
     def show(self, *args: Any, **kwargs: Any) -> None:
         """Show the underlying view/window."""
 
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            if args or (kwargs.get("wait") is True):
+                raise RuntimeError("Retained windows require non-blocking show()")
+            retained.show()
+            return
+
         show = getattr(self._view, "show", None)
         if callable(show):
             show(*args, **kwargs)
@@ -245,6 +252,11 @@ class AuroraView:
 
     def close(self) -> None:
         """Close the tool and unregister it from the keep-alive registry."""
+
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            retained.close()
+            return
 
         if self in AuroraView._instances:
             AuroraView._instances.remove(self)
@@ -317,9 +329,85 @@ class AuroraView:
         Args:
             visible: True to show, False to hide.
         """
+        retained = getattr(self, "_retained_window", None)
+        if retained is not None:
+            retained.set_visible(visible)
+            return
         set_visible = getattr(self._view, "set_visible", None)
         if callable(set_visible):
             set_visible(visible)
+
+    def _window_call(self, name: str, *args: Any) -> Any:
+        method = getattr(self._view, name, None)
+        if method is None:
+            raise RuntimeError(f"Window operation {name} is unavailable")
+        return method(*args)
+
+    def hide(self) -> None:
+        self._window_call("hide")
+
+    def focus(self) -> None:
+        self._window_call("focus")
+
+    def set_focus(self) -> None:
+        self.focus()
+
+    def move(self, x: int, y: int) -> None:
+        self._window_call("move", x, y)
+
+    def move_to(self, x: int, y: int) -> None:
+        self.move(x, y)
+
+    def resize(self, width: int, height: int) -> None:
+        self._window_call("resize", width, height)
+
+    def center(self) -> None:
+        self._window_call("center")
+
+    def set_min_size(self, width: int, height: int) -> None:
+        self._window_call("set_min_size", width, height)
+
+    def set_max_size(self, width: int, height: int) -> None:
+        self._window_call("set_max_size", width, height)
+
+    def minimize(self) -> None:
+        self._window_call("minimize")
+
+    def maximize(self) -> None:
+        self._window_call("maximize")
+
+    def unmaximize(self) -> None:
+        self._window_call("unmaximize")
+
+    def toggle_maximize(self) -> None:
+        self._window_call("toggle_maximize")
+
+    def restore(self) -> None:
+        self._window_call("restore")
+
+    def set_fullscreen(self, fullscreen: bool) -> None:
+        self._window_call("set_fullscreen", fullscreen)
+
+    def toggle_fullscreen(self) -> None:
+        self._window_call("toggle_fullscreen")
+
+    def set_always_on_top(self, value: bool = True) -> None:
+        self._window_call("set_always_on_top", value)
+
+    def set_resizable(self, value: bool) -> None:
+        self._window_call("set_resizable", value)
+
+    def set_decorations(self, value: bool) -> None:
+        self._window_call("set_decorations", value)
+
+    def set_title(self, title: str) -> None:
+        self._window_call("set_window_title", title)
+
+    def set_window_title(self, title: str) -> None:
+        self.set_title(title)
+
+    def sync_bounds(self, width: int, height: int) -> None:
+        self._window_call("sync_bounds", width, height)
 
     def set_position(self, x: int, y: int) -> None:
         """Set the position of the WebView window.

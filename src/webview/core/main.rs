@@ -8,17 +8,177 @@
 
 use pyo3::prelude::*;
 use std::cell::RefCell;
+#[cfg(target_os = "windows")]
+use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(target_os = "windows")]
+use std::sync::{Mutex, OnceLock, Weak};
 
 use super::AuroraView;
 use crate::ipc::{IpcHandler, JsCallbackManager, MessageQueue, WebViewMessage};
 use crate::utils::normalize_url;
 use crate::webview::config::WebViewConfig;
 use crate::webview::webview_inner::WebViewInner;
+use crate::webview::window_control::RetainedControl;
+#[cfg(target_os = "windows")]
+use crate::webview::window_control::RetainedShared;
+
+#[cfg(target_os = "windows")]
+type ProfileLocks = HashMap<Option<PathBuf>, Weak<Mutex<()>>>;
+
+#[cfg(target_os = "windows")]
+fn retained_profile_lock(profile: Option<PathBuf>) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<ProfileLocks>> = OnceLock::new();
+    let profile = profile
+        .or_else(crate::platform::windows::warmup::get_shared_user_data_folder)
+        .map(|path| {
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir().unwrap_or_default().join(path)
+            };
+            let mut normalized = PathBuf::new();
+            for component in absolute.components() {
+                match component {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        normalized.pop();
+                    }
+                    other => normalized.push(other.as_os_str()),
+                }
+            }
+            normalized.to_string_lossy().to_lowercase().into()
+        });
+    let mut locks = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&profile).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(profile, Arc::downgrade(&lock));
+    lock
+}
 
 #[pymethods]
 impl AuroraView {
+    /// Associate a send-safe retained lifecycle before the native owner starts.
+    fn attach_retained(&self, control: &Bound<'_, RetainedControl>) -> PyResult<()> {
+        if self.inner.borrow().is_some() || self.retained.borrow().is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "WebView is already started or retained",
+            ));
+        }
+        let shared = control.borrow().shared.clone();
+        self.ipc_handler
+            .set_retained_control(shared.control.clone())
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        self.js_callback_manager
+            .set_retained_control(shared.control.clone())
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        *self.retained.borrow_mut() = Some(shared);
+        Ok(())
+    }
+
+    /// Create, run and release a retained standalone window inside one GIL-free scope.
+    #[cfg(target_os = "windows")]
+    fn run_retained(&self, py: Python<'_>) -> PyResult<()> {
+        let shared: Arc<RetainedShared> = self.retained.borrow().clone().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("retained control is not attached")
+        })?;
+        let mut config = self.config.borrow().clone();
+        if config.parent_hwnd.is_some() || config.headless {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "retained windows require native standalone mode",
+            ));
+        }
+        config.auto_show = false;
+        let handler = self.ipc_handler.clone();
+        let queue = self.message_queue.clone();
+        let result = py.detach(move || {
+            #[cfg(debug_assertions)]
+            {
+                let delay = shared.create_delay_ms.swap(0, std::sync::atomic::Ordering::SeqCst);
+                if delay > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                }
+            }
+            if shared.control.intent().close {
+                shared.control.native_released();
+                return Ok(());
+            }
+            let mut created_hwnd = None;
+            let outcome = (|| -> Result<(), String> {
+                // WebView2 environment creation can fail when two owner
+                // threads initialize the same user-data folder concurrently.
+                // Serialize that initialization only; the windows run freely
+                // on their separate owners after creation.
+                let profile_lock = retained_profile_lock(config.data_directory.clone());
+                let profile_guard = profile_lock.lock().unwrap();
+                if shared.control.intent().close {
+                    return Ok(());
+                }
+                let mut inner = WebViewInner::create_standalone(config, handler.clone(), queue)
+                    .map_err(|error| error.to_string())?;
+                drop(profile_guard);
+                let hwnd = inner
+                    .get_hwnd()
+                    .ok_or_else(|| "retained native window has no HWND".to_string())?;
+                created_hwnd = Some(hwnd);
+                shared.note_created_hwnd(hwnd);
+                let adapter = match crate::platform::windows::retained_window::RetainedWindow::install(
+                    hwnd,
+                    shared.clone(),
+                ) {
+                    Ok(adapter) => adapter,
+                    Err(error) => {
+                        drop(inner);
+                        let cleanup = crate::platform::windows::retained_window::RetainedWindow::destroy_hwnd(hwnd);
+                        return Err(match cleanup {
+                            Ok(()) => error,
+                            Err(cleanup_error) => format!("{error}; native cleanup failed: {cleanup_error}"),
+                        });
+                    }
+                };
+                if shared.control.intent().close {
+                    drop(inner);
+                    let released = adapter.destroy();
+                    drop(adapter);
+                    return released;
+                }
+                inner.run_event_loop_retained(shared.clone(), handler);
+                drop(inner);
+                let released = adapter.destroy();
+                drop(adapter);
+                released
+            })();
+            let native_alive = created_hwnd.is_some_and(
+                crate::platform::windows::retained_window::RetainedWindow::is_hwnd_alive,
+            );
+            if let Err(ref error) = outcome {
+                shared.control.fail(error.clone());
+            }
+            shared.clear_wake();
+            if !native_alive {
+                shared.control.native_released();
+            }
+            outcome
+        });
+        result.map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn run_retained(&self, _py: Python<'_>) -> PyResult<()> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "retained windows require Windows",
+        ))
+    }
+
     /// Create a new WebView instance
     #[new]
     #[allow(clippy::too_many_arguments)]
@@ -159,6 +319,7 @@ impl AuroraView {
             event_loop_proxy: Rc::new(RefCell::new(None)),
             js_callback_manager,
             on_hwnd_created: Rc::new(RefCell::new(None)),
+            retained: Rc::new(RefCell::new(None)),
             #[cfg(target_os = "windows")]
             cached_hwnd: Rc::new(RefCell::new(None)),
         })
@@ -240,6 +401,7 @@ impl AuroraView {
             event_loop_proxy: Rc::new(RefCell::new(None)),
             js_callback_manager: Arc::new(JsCallbackManager::new()),
             on_hwnd_created: Rc::new(RefCell::new(None)),
+            retained: Rc::new(RefCell::new(None)),
             cached_hwnd: Rc::new(RefCell::new(cached_hwnd)),
         })
     }
@@ -248,6 +410,15 @@ impl AuroraView {
 
     /// Show WebView window (standalone mode or embedded mode)
     fn show(&self, py: Python<'_>) -> PyResult<()> {
+        if let Some(shared) = self.retained.borrow().as_ref() {
+            shared
+                .control
+                .show(true)
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            return shared
+                .signal()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err);
+        }
         use crate::webview::config::EmbedMode;
         let embed_mode = self.config.borrow().embed_mode;
 
@@ -468,6 +639,12 @@ impl AuroraView {
     /// `EventLoopProxy` that wakes it - so the window is only ever torn down on
     /// the thread that owns it.
     fn close(&self) -> PyResult<()> {
+        if let Some(shared) = self.retained.borrow().as_ref() {
+            shared.control.close();
+            return shared
+                .signal()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err);
+        }
         super::request_close_via_channel(&self.message_queue, &self.event_loop_proxy);
         Ok(())
     }
@@ -604,12 +781,20 @@ impl AuroraView {
     /// Get the window title
     #[getter]
     fn title(&self) -> PyResult<String> {
+        if let Some(result) = self.retained_snapshot() {
+            return Ok(result?.title);
+        }
         Ok(self.config.borrow().title.clone())
     }
 
     /// Set the window title
     #[setter]
     fn set_title(&mut self, title: String) -> PyResult<()> {
+        if let Some(result) = self.retained_command(
+            crate::webview::window_control::WindowCommand::SetTitle(title.clone()),
+        ) {
+            result?;
+        }
         self.config.borrow_mut().title = title;
         Ok(())
     }
@@ -717,10 +902,12 @@ impl AuroraView {
     ///     >>> # From DCC main thread - safe!
     ///     >>> self._proxy.eval_js("console.log('Hello!')")
     fn get_proxy(&self) -> crate::webview::proxy::WebViewProxy {
-        crate::webview::proxy::WebViewProxy::new(
+        let mut proxy = crate::webview::proxy::WebViewProxy::new(
             self.message_queue.clone(),
             self.js_callback_manager.clone(),
-        )
+        );
+        proxy.retained = self.retained.borrow().clone();
+        proxy
     }
 
     // === Lifecycle State Query APIs ===

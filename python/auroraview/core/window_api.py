@@ -52,7 +52,10 @@ class WindowAPI:
         """
         window = self._get_window(label)
         if window:
-            window._core.show()
+            if getattr(window, "_retained_window", None) is not None:
+                window.show(wait=False)
+            else:
+                window._core.show()
         return {"success": True}
 
     def hide(self, label: Optional[str] = None) -> Dict[str, Any]:
@@ -172,7 +175,9 @@ class WindowAPI:
             {"success": True}
         """
         window = self._get_window(label)
-        if window and hasattr(window._core, "set_title"):
+        if window and getattr(window, "_retained_window", None) is not None:
+            window.title = title
+        elif window and hasattr(window._core, "set_title"):
             window._core.set_title(title)
             window._title = title
         return {"success": True}
@@ -221,7 +226,9 @@ class WindowAPI:
             {"success": True}
         """
         window = self._get_window(label)
-        if window and hasattr(window._core, "set_min_size"):
+        if window and getattr(window, "_retained_window", None) is not None:
+            window._window_command("set_min_size", width, height)
+        elif window and hasattr(window._core, "set_min_size"):
             window._core.set_min_size(width, height)
         return {"success": True}
 
@@ -237,7 +244,9 @@ class WindowAPI:
             {"success": True}
         """
         window = self._get_window(label)
-        if window and hasattr(window._core, "set_max_size"):
+        if window and getattr(window, "_retained_window", None) is not None:
+            window._window_command("set_max_size", width, height)
+        elif window and hasattr(window._core, "set_max_size"):
             window._core.set_max_size(width, height)
         return {"success": True}
 
@@ -251,7 +260,9 @@ class WindowAPI:
             {"success": True}
         """
         window = self._get_window(label)
-        if window and hasattr(window._core, "center"):
+        if window and getattr(window, "_retained_window", None) is not None:
+            window._window_command("center")
+        elif window and hasattr(window._core, "center"):
             window._core.center()
         return {"success": True}
 
@@ -281,9 +292,60 @@ class WindowAPI:
             {"success": True}
         """
         window = self._get_window(label)
-        if window and hasattr(window._core, "set_resizable"):
+        if window and getattr(window, "_retained_window", None) is not None:
+            window._window_command("set_resizable", resizable)
+        elif window and hasattr(window._core, "set_resizable"):
             window._core.set_resizable(resizable)
         return {"success": True}
+
+    def _apply_window(self, name: str, *args: Any, label: Optional[str] = None) -> Dict[str, Any]:
+        window = self._get_window(label)
+        if window is not None:
+            getattr(window, name)(*args)
+        return {"success": True}
+
+    def set_visible(self, visible: bool, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("set_visible", visible, label=label)
+
+    def set_focus(self, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("set_focus", label=label)
+
+    def move(self, x: int, y: int, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("move", x, y, label=label)
+
+    def move_to(self, x: int, y: int, label: Optional[str] = None) -> Dict[str, Any]:
+        return self.move(x, y, label=label)
+
+    def resize(self, width: int, height: int, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("resize", width, height, label=label)
+
+    def sync_bounds(self, width: int, height: int, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("sync_bounds", width, height, label=label)
+
+    def unmaximize(self, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("unmaximize", label=label)
+
+    def toggle_maximize(self, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("toggle_maximize", label=label)
+
+    def set_fullscreen(self, fullscreen: bool, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("set_fullscreen", fullscreen, label=label)
+
+    def set_window_title(self, title: str, label: Optional[str] = None) -> Dict[str, Any]:
+        return self.set_title(title, label=label)
+
+    def set_decorations(self, decorations: bool, label: Optional[str] = None) -> Dict[str, Any]:
+        return self._apply_window("set_decorations", decorations, label=label)
+
+    def is_fullscreen(self, label: Optional[str] = None) -> Dict[str, bool]:
+        window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            return {"fullscreen": window._retained_window._control.snapshot()["fullscreen"]}
+        return {"fullscreen": False}
+
+    def get_title(self, label: Optional[str] = None) -> Dict[str, str]:
+        window = self._get_window(label)
+        return {"title": window.title if window else ""}
 
     # ============================================
     # Window Queries
@@ -299,6 +361,9 @@ class WindowAPI:
             {"x": int, "y": int}
         """
         window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            snapshot = window._retained_window._control.snapshot()
+            return {"x": snapshot["x"], "y": snapshot["y"]}
         if window and hasattr(window._core, "get_position"):
             pos = window._core.get_position()
             return {"x": pos[0], "y": pos[1]}
@@ -314,6 +379,9 @@ class WindowAPI:
             {"width": int, "height": int}
         """
         window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            snapshot = window._retained_window._control.snapshot()
+            return {"width": snapshot["width"], "height": snapshot["height"]}
         if window and hasattr(window._core, "get_size"):
             size = window._core.get_size()
             return {"width": size[0], "height": size[1]}
@@ -331,6 +399,10 @@ class WindowAPI:
         Returns:
             {"x": int, "y": int, "width": int, "height": int}
         """
+        window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            snapshot = window._retained_window._control.snapshot()
+            return {key: snapshot[key] for key in ("x", "y", "width", "height")}
         pos = self.get_position(label)
         size = self.get_size(label)
         return {**pos, **size}
@@ -347,6 +419,18 @@ class WindowAPI:
         window = self._get_window(label)
         if not window:
             return {"error": "Window not found"}
+
+        if getattr(window, "_retained_window", None) is not None:
+            snapshot = window._retained_window._control.snapshot()
+            return {
+                "label": label or window._window_id or "main",
+                "visible": snapshot["visible"],
+                "focused": snapshot["focused"],
+                "minimized": snapshot["minimized"],
+                "maximized": snapshot["maximized"],
+                "fullscreen": snapshot["fullscreen"],
+                "bounds": {key: snapshot[key] for key in ("x", "y", "width", "height")},
+            }
 
         bounds = self.get_bounds(label)
         actual_label = label or window._window_id or "main"
@@ -371,6 +455,8 @@ class WindowAPI:
             {"visible": bool}
         """
         window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            return {"visible": window._retained_window._control.snapshot()["visible"]}
         if window and hasattr(window._core, "is_visible"):
             return {"visible": window._core.is_visible()}
         return {"visible": True}  # Assume visible if method not available
@@ -385,6 +471,8 @@ class WindowAPI:
             {"focused": bool}
         """
         window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            return {"focused": window._retained_window._control.snapshot()["focused"]}
         if window and hasattr(window._core, "is_focused"):
             return {"focused": window._core.is_focused()}
         return {"focused": False}
@@ -399,6 +487,8 @@ class WindowAPI:
             {"minimized": bool}
         """
         window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            return {"minimized": window._retained_window._control.snapshot()["minimized"]}
         if window and hasattr(window._core, "is_minimized"):
             return {"minimized": window._core.is_minimized()}
         return {"minimized": False}
@@ -413,6 +503,8 @@ class WindowAPI:
             {"maximized": bool}
         """
         window = self._get_window(label)
+        if window and getattr(window, "_retained_window", None) is not None:
+            return {"maximized": window._retained_window._control.snapshot()["maximized"]}
         if window and hasattr(window._core, "is_maximized"):
             return {"maximized": window._core.is_maximized()}
         return {"maximized": False}
@@ -672,13 +764,23 @@ def setup_window_api(webview: "WebView") -> WindowAPI:
         "hide",
         "close",
         "focus",
+        "set_visible",
+        "set_focus",
         # State
         "minimize",
         "maximize",
         "restore",
+        "unmaximize",
+        "toggle_maximize",
+        "set_fullscreen",
         "toggle_fullscreen",
         # Properties
         "set_title",
+        "set_window_title",
+        "move",
+        "move_to",
+        "resize",
+        "sync_bounds",
         "set_position",
         "set_size",
         "set_min_size",
@@ -686,6 +788,7 @@ def setup_window_api(webview: "WebView") -> WindowAPI:
         "center",
         "set_always_on_top",
         "set_resizable",
+        "set_decorations",
         # Queries
         "get_position",
         "get_size",
@@ -695,6 +798,8 @@ def setup_window_api(webview: "WebView") -> WindowAPI:
         "is_focused",
         "is_minimized",
         "is_maximized",
+        "is_fullscreen",
+        "get_title",
         # Window Manager
         "exists",
         "list",
