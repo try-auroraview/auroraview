@@ -14,6 +14,7 @@ use super::js_assets;
 use super::lifecycle::LifecycleManager;
 use super::message_pump;
 use super::standalone;
+#[cfg(target_os = "windows")]
 use super::window_control::RetainedShared;
 use crate::ipc::{IpcHandler, MessageQueue};
 
@@ -544,6 +545,7 @@ impl WebViewInner {
     }
 
     /// Run a retained window while its owner keeps all native state local.
+    #[cfg(target_os = "windows")]
     pub fn run_event_loop_retained(
         &mut self,
         shared: Arc<RetainedShared>,

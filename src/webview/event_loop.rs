@@ -931,7 +931,7 @@ impl WebViewEventHandler {
         Self::run_blocking_inner(event_loop, state, auto_show, None);
     }
 
-    #[cfg(feature = "python-bindings")]
+    #[cfg(all(feature = "python-bindings", target_os = "windows"))]
     pub fn run_blocking_retained(
         event_loop: EventLoop<UserEvent>,
         state: Arc<Mutex<EventLoopState>>,
