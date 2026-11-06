@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -70,7 +71,10 @@ class GalleryArtifacts(unittest.TestCase):
     def test_prebuilt_wheel_reaches_collected_python_input(self):
         for name, job_name in (("build-gallery.yml", "build"), ("pr-checks.yml", "gallery-pack")):
             install = step(workflow(name)["jobs"][job_name], "Install auroraview wheel")
-            self.assertEqual(install["run"].strip(), "vx just gallery-ci-stage-wheel dist")
+            self.assertEqual(
+                install["run"].strip(),
+                "vx just gallery-ci-stage-wheel test-results/gallery-wheel/input",
+            )
             self.assertIn("GALLERY_SOURCE_HEAD", install["env"])
             self.assertEqual(
                 install["env"]["GALLERY_WHEEL_ARTIFACT"], "${{ matrix.wheel-artifact }}"
@@ -252,6 +256,47 @@ class GalleryWheelStaging(unittest.TestCase):
         self.write_wheel()
         shutil.copyfile(self.wheel, self.dist / "other-1.2.3-py3-none-any.whl")
         self.assert_rejected_before_install("Exactly one wheel")
+
+    def test_workflow_staging_ignores_restored_dist_wheels(self):
+        stale = self.dist / "auroraview-1.2.2-py3-none-any.whl"
+        stale.write_bytes(b"stale wheel restored from the build cache")
+        for name, job_name in (("build-gallery.yml", "build"), ("pr-checks.yml", "gallery-pack")):
+            with self.subTest(workflow=name):
+                job = workflow(name)["jobs"][job_name]
+                download = step(job, "Download pre-built auroraview wheel")
+                destination = self.root / download["with"]["path"]
+                destination.mkdir(parents=True, exist_ok=True)
+                selected = destination / self.wheel.name
+                selected.write_bytes(self.wheel.read_bytes())
+                command = shlex.split(step(job, "Install auroraview wheel")["run"])
+                result = subprocess.run(
+                    [
+                        *command[:2],
+                        "--justfile",
+                        str(ROOT / "justfile"),
+                        "--working-directory",
+                        str(self.root),
+                        *command[2:],
+                    ],
+                    cwd=self.root,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    env=dict(
+                        os.environ,
+                        PYTHONUTF8="1",
+                        UV_NO_INDEX="1",
+                        UV_OFFLINE="1",
+                        UV_PYTHON_DOWNLOADS="never",
+                    ),
+                    timeout=120,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                receipt = json.loads(self.receipt.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    receipt["wheel"]["sha256"], hashlib.sha256(selected.read_bytes()).hexdigest()
+                )
+                self.assertEqual(stale.read_bytes(), b"stale wheel restored from the build cache")
 
     def test_mismatched_checkout_source_rejected(self):
         source = self.root / "python/auroraview/core/webview.py"
