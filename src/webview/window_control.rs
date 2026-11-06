@@ -168,10 +168,12 @@ pub(crate) struct RetainedShared {
 
 #[cfg(feature = "python-bindings")]
 impl RetainedShared {
+    #[cfg(target_os = "windows")]
     pub fn note_created_hwnd(&self, hwnd: u64) {
         *self.last_created_hwnd.lock().unwrap() = Some(hwnd);
     }
 
+    #[cfg(target_os = "windows")]
     pub fn note_native_event(&self, event: &'static str) {
         let mut events = self.native_events.lock().unwrap();
         if events.len() == 32 {
@@ -192,6 +194,7 @@ impl RetainedShared {
         *self.wake.lock().unwrap() = Some(proxy);
     }
 
+    #[cfg(target_os = "windows")]
     pub fn clear_wake(&self) {
         *self.wake.lock().unwrap() = None;
     }
