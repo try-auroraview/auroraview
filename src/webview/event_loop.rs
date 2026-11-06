@@ -959,17 +959,20 @@ impl WebViewEventHandler {
         #[cfg(feature = "python-bindings")]
         if let Some(shared) = &retained {
             shared.install_wake(proxy.clone());
-            let hwnd = state.lock().ok().and_then(|guard| guard.get_hwnd());
-            if let Some(hwnd) = hwnd {
-                if let Ok(guard) = state.lock() {
-                    if let Some(window) = &guard.window {
-                        shared.control.ready(Self::snapshot(window, Some(hwnd), 1));
+            #[cfg(target_os = "windows")]
+            {
+                let hwnd = state.lock().ok().and_then(|guard| guard.get_hwnd());
+                if let Some(hwnd) = hwnd {
+                    if let Ok(guard) = state.lock() {
+                        if let Some(window) = &guard.window {
+                            shared.control.ready(Self::snapshot(window, Some(hwnd), 1));
+                        }
                     }
+                } else {
+                    shared
+                        .control
+                        .fail("retained native window has no HWND".into());
                 }
-            } else {
-                shared
-                    .control
-                    .fail("retained native window has no HWND".into());
             }
         }
 

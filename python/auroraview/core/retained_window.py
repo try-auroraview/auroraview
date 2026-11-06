@@ -10,8 +10,6 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, ClassVar, Optional, Set
 
-from auroraview._core import RetainedControl
-
 if TYPE_CHECKING:
     from auroraview.integration.framework import AuroraView
 
@@ -66,6 +64,7 @@ class RetainedWindow:
     _exit_handler_registered: ClassVar[bool] = False
 
     def __init__(self, view: "AuroraView") -> None:
+        from auroraview._core import RetainedControl
         from auroraview.integration.framework import AuroraView
 
         if not isinstance(view, AuroraView):
