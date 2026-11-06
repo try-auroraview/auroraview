@@ -3,6 +3,7 @@
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,32 @@ class Tool(AuroraView):
 
     def on_close(self):
         self.closed += 1
+
+
+def test_standalone_main_interpreter_without_private_module(monkeypatch):
+    monkeypatch.setitem(sys.modules, "bpy", None)
+    monkeypatch.setitem(sys.modules, "_xxsubinterpreters", None)
+    tool = Tool()
+    window = RetainedWindow(tool)
+    window.close()
+    assert window.wait(0)
+    assert tool.closed == 1
+
+
+def test_private_module_fallback_rejects_a_real_subinterpreter():
+    interpreters = pytest.importorskip("_xxsubinterpreters")
+    source = Path(__file__).resolve().parents[3] / "python/auroraview/core/retained_window.py"
+    child = interpreters.create()
+    try:
+        interpreters.run_string(
+            child,
+            "import runpy, sys\n"
+            "sys.modules['_xxsubinterpreters'] = None\n"
+            f"module = runpy.run_path({str(source)!r})\n"
+            "assert not module['_is_main_interpreter']()\n",
+        )
+    finally:
+        interpreters.destroy(child)
 
 
 def test_close_before_prepare_releases_registration_once():

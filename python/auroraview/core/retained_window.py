@@ -56,6 +56,41 @@ def _submit_pending() -> None:
             time.sleep(0.02)
 
 
+def _is_main_interpreter() -> bool:
+    try:
+        import _xxsubinterpreters as interpreters
+    except ImportError:
+        if sys.implementation.name != "cpython":
+            raise RuntimeError(
+                "RetainedWindow requires CPython interpreter-state support"
+            ) from None
+        api = ctypes.pythonapi  # PyDLL keeps the GIL held during each C API call.
+        current = api.PyThreadState_Get
+        current.argtypes = ()
+        current.restype = ctypes.c_void_p
+        main = api.PyInterpreterState_Main
+        main.argtypes = ()
+        main.restype = ctypes.c_void_p
+        if sys.version_info < (3, 9):
+            # CPython 3.7/3.8 expose this prefix of PyThreadState in pystate.h.
+            # Read only our live current state; never traverse another thread's state.
+            class ThreadState(ctypes.Structure):
+                _fields_ = [
+                    ("prev", ctypes.c_void_p),
+                    ("next", ctypes.c_void_p),
+                    ("interp", ctypes.c_void_p),
+                ]
+
+            interpreter = ctypes.cast(current(), ctypes.POINTER(ThreadState)).contents.interp
+        else:
+            get_interpreter = api.PyThreadState_GetInterpreter
+            get_interpreter.argtypes = (ctypes.c_void_p,)
+            get_interpreter.restype = ctypes.c_void_p
+            interpreter = get_interpreter(current())
+        return interpreter == main()
+    return interpreters.get_current() == interpreters.get_main()
+
+
 class RetainedWindow:
     """Prepare one business WebView off the host thread and retain its DOM."""
 
@@ -101,13 +136,7 @@ class RetainedWindow:
 
             blender_host = True
         except ImportError:
-            try:
-                import _xxsubinterpreters as interpreters
-            except ImportError as exc:
-                raise RuntimeError(
-                    "RetainedWindow standalone host dispatch requires main-interpreter support"
-                ) from exc
-            if interpreters.get_current() != interpreters.get_main():
+            if not _is_main_interpreter():
                 raise RuntimeError(
                     "RetainedWindow standalone host must use the main interpreter"
                 ) from None
