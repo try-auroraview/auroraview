@@ -295,6 +295,7 @@ features-all = ["features-core", "feature-downloads", "feature-settings", "featu
 [[test]]
 name = "retained_window_integration"
 path = "tests/rust/retained_window_integration_tests.rs"
+required-features = ["python-bindings"]
 
 [[test]]
 name = "protocol_handlers_integration"

@@ -14,8 +14,6 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Error, sync_playwright
-
 ROOT = Path(__file__).resolve().parents[2]
 DOCUMENT = """() => {
   const navigation = performance.getEntriesByType('navigation')[0];
@@ -61,6 +59,11 @@ SAFE_HEADERS = (
 def clean_url(value):
     parts = urlsplit(value)
     return parts.scheme + "://" + parts.netloc + parts.path
+
+
+def is_auth_page(url, title):
+    host = urlsplit(url).hostname or ""
+    return host == "passport.woa.com" or "OA登录" in title
 
 
 def wait_document(page):
@@ -180,6 +183,8 @@ def report(opened, event, **data):
 
 
 def main():
+    from playwright.sync_api import Error, sync_playwright
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("blender")
     parser.add_argument("--source", choices=("inline", "file", "http", "url"), default="file")
@@ -368,8 +373,7 @@ def main():
                     except (Error, OSError):
                         time.sleep(0.1)
                         continue
-                    host = urlsplit(data["url"]).hostname or ""
-                    is_auth = "passport.woa.com" in host or "OA登录" in data["title"]
+                    is_auth = is_auth_page(data["url"], data["title"])
                     if is_auth:
                         if not auth_seen:
                             report(opened, "auth_required", url=data["url"], title=data["title"])
