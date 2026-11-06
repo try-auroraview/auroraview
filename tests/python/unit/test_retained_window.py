@@ -37,7 +37,12 @@ def test_standalone_main_interpreter_without_private_module(monkeypatch):
 def test_private_module_fallback_rejects_a_real_subinterpreter():
     interpreters = pytest.importorskip("_xxsubinterpreters")
     source = Path(__file__).resolve().parents[3] / "python/auroraview/core/retained_window.py"
-    child = interpreters.create()
+    # Python 3.12 isolates extension modules by default; ctypes needs the shared GIL.
+    child = (
+        interpreters.create(isolated=False)
+        if sys.version_info >= (3, 12)
+        else interpreters.create()
+    )
     try:
         interpreters.run_string(
             child,
