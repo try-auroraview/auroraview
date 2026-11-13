@@ -38,6 +38,23 @@ pub struct AIClient {
 }
 
 impl AIClient {
+    /// Normalize a caller-supplied model name before it reaches genai.
+    ///
+    /// genai 0.6 requires Groq models to be namespaced (`groq::<name>`); bare
+    /// names now resolve to the local Ollama adapter. Callers can still pass the
+    /// legacy bare Groq ids through `AIConfig::for_model` or `AIClient::chat`,
+    /// so map exactly those two ids at the common request boundary to preserve
+    /// their pre-upgrade Groq routing. Explicit namespaces (including
+    /// `ollama::...`) and every other model name are left untouched.
+    /// Public so the shared request boundary can be checked offline.
+    pub fn normalize_model(model: &str) -> &str {
+        match model {
+            "llama-3.3-70b-versatile" => "groq::llama-3.3-70b-versatile",
+            "mixtral-8x7b-32768" => "groq::mixtral-8x7b-32768",
+            _ => model,
+        }
+    }
+
     /// Create new AI client with default configuration
     ///
     /// API keys are automatically loaded from environment variables:
@@ -161,7 +178,8 @@ impl AIClient {
         // Build genai options
         let genai_options = Self::build_genai_options(&options);
 
-        // Execute chat
+        // Execute chat (normalize legacy bare Groq ids at the shared boundary)
+        let model = Self::normalize_model(model);
         let chat_res = self
             .client
             .exec_chat(model, chat_req, Some(&genai_options))
@@ -267,7 +285,8 @@ impl AIClient {
         let chat_req = ChatRequest::new(chat_messages);
         let genai_options = Self::build_genai_options(&options);
 
-        // Execute streaming chat - genai returns a ChatStreamResponse
+        // Execute streaming chat (same shared model normalization as non-streaming)
+        let model = Self::normalize_model(model);
         let stream_res = self
             .client
             .exec_chat_stream(model, chat_req, Some(&genai_options))

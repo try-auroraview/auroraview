@@ -18,7 +18,6 @@ fn catalog_models_match_genai_adapter() {
 
     for model in models {
         let adapter = genai::adapter::AdapterKind::from_model(&model.id)
-            .ok()
             .expect("from_model falls back to Ollama and never fails");
         let expected = model.provider.to_string();
 
@@ -62,13 +61,42 @@ fn infer_provider_resolves_namespaces_and_keeps_existing_rules(
     assert_eq!(AIClient::infer_provider(model), expected);
 }
 
+/// Legacy callers may still pass bare Groq ids through `AIConfig::for_model` or
+/// `AIClient::chat`. Both `chat_with_options` and `chat_stream_with_options`
+/// route the model through `normalize_model` before calling genai, so this
+/// shared boundary maps exactly those two ids to the namespaced form genai 0.6
+/// routes to Groq. Explicit namespaces (including `ollama::...`) and every
+/// other model name are left untouched. No request is issued here.
+#[rstest]
+#[case("llama-3.3-70b-versatile", "groq::llama-3.3-70b-versatile", "groq")]
+#[case("mixtral-8x7b-32768", "groq::mixtral-8x7b-32768", "groq")]
+#[case(
+    "groq::llama-3.3-70b-versatile",
+    "groq::llama-3.3-70b-versatile",
+    "groq"
+)]
+#[case("ollama::llama3.2", "ollama::llama3.2", "ollama")]
+#[case("gpt-4o", "gpt-4o", "openai")]
+#[case("llama3.2", "llama3.2", "ollama")]
+fn shared_boundary_preserves_legacy_groq_routing(
+    #[case] input: &str,
+    #[case] expected: &str,
+    #[case] expected_adapter: &str,
+) {
+    let normalized = AIClient::normalize_model(input);
+    assert_eq!(normalized, expected);
+
+    let adapter = genai::adapter::AdapterKind::from_model(normalized)
+        .expect("from_model falls back to Ollama and never fails");
+    assert_eq!(adapter.as_lower_str(), expected_adapter);
+}
+
 #[test]
 fn groq_default_model_is_namespaced() {
     let default = ProviderType::Groq.default_model();
     assert_eq!(default, "groq::llama-3.3-70b-versatile");
 
     let adapter = genai::adapter::AdapterKind::from_model(default)
-        .ok()
         .expect("from_model falls back to Ollama and never fails");
     assert_eq!(adapter.as_lower_str(), "groq");
 }
