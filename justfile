@@ -776,6 +776,8 @@ ci-test-rust:
 ci-rust-coverage-lcov: llvm-cov-install nextest-install
     @echo "Running Rust integration coverage with cargo-llvm-cov + cargo-nextest..."
     vx cargo llvm-cov nextest --no-report --features "test-helpers" --config-file .config/nextest.toml --profile ci --tests
+    @echo "Running AI agent crate tests (targeted package selection)..."
+    vx cargo test -p auroraview-ai-agent --test providers_tests --test actions_tests
     vx cargo llvm-cov report --lcov --output-path rust-coverage.lcov
     @echo "[OK] Rust coverage report: rust-coverage.lcov"
 
