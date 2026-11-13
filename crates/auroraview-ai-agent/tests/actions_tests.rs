@@ -415,6 +415,7 @@ fn custom_action_executes_correctly() {
 #[case(ProviderType::Gemini, "gemini-2.0-flash-exp")]
 #[case(ProviderType::DeepSeek, "deepseek-chat")]
 #[case(ProviderType::Ollama, "llama3.2")]
+#[case(ProviderType::Groq, "groq::llama-3.3-70b-versatile")]
 fn provider_default_model(#[case] provider: ProviderType, #[case] expected: &str) {
     assert_eq!(provider.default_model(), expected);
 }

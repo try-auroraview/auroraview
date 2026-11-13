@@ -69,15 +69,27 @@ impl AIClient {
 
     /// Get provider type from model name
     ///
-    /// genai automatically infers provider from model name:
-    /// - "gpt-*" -> OpenAI
+    /// genai 0.6 addresses providers such as Groq through a `namespace::model`
+    /// prefix (for example `groq::llama-3.3-70b-versatile`). Resolve a known
+    /// namespace first so namespaced catalog models stay aligned with the
+    /// adapter genai selects, otherwise match the bare model name against the
+    /// usual prefixes:
+    /// - "gpt-*", "o1*" -> OpenAI
     /// - "claude-*" -> Anthropic
     /// - "gemini-*" -> Gemini
     /// - "deepseek-*" -> DeepSeek
-    /// - "llama*" with Ollama -> Ollama
+    /// - "llama*" -> Ollama
     /// - etc.
     pub fn infer_provider(model: &str) -> ProviderType {
-        let model_lower = model.to_lowercase();
+        let (namespace, name) = model
+            .split_once("::")
+            .map_or((None, model), |(ns, rest)| (Some(ns), rest));
+
+        if let Some(provider) = namespace.and_then(|ns| ns.parse::<ProviderType>().ok()) {
+            return provider;
+        }
+
+        let model_lower = name.to_lowercase();
 
         if model_lower.starts_with("gpt-") || model_lower.starts_with("o1") {
             ProviderType::OpenAI
@@ -147,7 +159,7 @@ impl AIClient {
         let chat_req = ChatRequest::new(chat_messages);
 
         // Build genai options
-        let genai_options = self.build_genai_options(&options);
+        let genai_options = Self::build_genai_options(&options);
 
         // Execute chat
         let chat_res = self
@@ -156,7 +168,7 @@ impl AIClient {
             .await
             .map_err(|e| AIError::RequestFailed(e.to_string()))?;
 
-        // Extract content using new genai 0.5 API
+        // Extract content using the genai ChatResponse API
         let content = chat_res.first_text().map(|s| s.to_string());
 
         // Extract tool calls from response
@@ -253,9 +265,9 @@ impl AIClient {
             .collect();
 
         let chat_req = ChatRequest::new(chat_messages);
-        let genai_options = self.build_genai_options(&options);
+        let genai_options = Self::build_genai_options(&options);
 
-        // Execute streaming chat - genai 0.5 returns ChatStreamResponse
+        // Execute streaming chat - genai returns a ChatStreamResponse
         let stream_res = self
             .client
             .exec_chat_stream(model, chat_req, Some(&genai_options))
@@ -270,7 +282,7 @@ impl AIClient {
             id: stream_id.clone(),
         });
 
-        // Process stream events - genai 0.5 uses .stream field
+        // Process stream events - ChatStreamResponse exposes .stream
         // ChatStream yields Result<ChatStreamEvent, genai::Error>
         let mut stream = stream_res.stream;
         while let Some(result) = stream.next().await {
@@ -334,8 +346,14 @@ impl AIClient {
         })
     }
 
-    /// Build genai ChatOptions from our ChatOptions
-    fn build_genai_options(&self, options: &ChatOptions) -> GenaiChatOptions {
+    /// Build genai `ChatOptions` from our `ChatOptions`.
+    ///
+    /// Public so callers (and offline tests) can inspect the exact options
+    /// handed to genai without issuing a request. genai 0.6 made reasoning
+    /// capture opt-in: Gemini `includeThoughts` and streamed reasoning chunks
+    /// are now gated on it. Keep it enabled so `reasoning_content` and
+    /// `ThinkingDelta` stay available as they were before the upgrade.
+    pub fn build_genai_options(options: &ChatOptions) -> GenaiChatOptions {
         let mut genai_opts = GenaiChatOptions::default();
 
         if let Some(temp) = options.temperature {
@@ -349,6 +367,8 @@ impl AIClient {
         if let Some(top_p) = options.top_p {
             genai_opts = genai_opts.with_top_p(top_p as f64);
         }
+
+        genai_opts = genai_opts.with_capture_reasoning_content(true);
 
         genai_opts
     }
@@ -436,15 +456,19 @@ impl AIClient {
             ],
             ProviderType::Groq => vec![
                 ModelInfo::new(
-                    "llama-3.3-70b-versatile",
+                    "groq::llama-3.3-70b-versatile",
                     "Llama 3.3 70B",
                     ProviderType::Groq,
                 )
                 .with_description("Fast inference on Groq")
                 .with_context_window(128000),
-                ModelInfo::new("mixtral-8x7b-32768", "Mixtral 8x7B", ProviderType::Groq)
-                    .with_description("MoE model on Groq")
-                    .with_context_window(32768),
+                ModelInfo::new(
+                    "groq::mixtral-8x7b-32768",
+                    "Mixtral 8x7B",
+                    ProviderType::Groq,
+                )
+                .with_description("MoE model on Groq")
+                .with_context_window(32768),
             ],
             ProviderType::XAI => vec![
                 ModelInfo::new("grok-2", "Grok 2", ProviderType::XAI)
