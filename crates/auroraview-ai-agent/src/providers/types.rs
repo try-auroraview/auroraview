@@ -29,6 +29,9 @@ pub enum ProviderType {
 
 impl ProviderType {
     /// Get default model for this provider
+    ///
+    /// Groq models carry the `groq::` namespace required by genai 0.6 so that
+    /// requests reach the Groq adapter instead of the local Ollama fallback.
     pub fn default_model(&self) -> &'static str {
         match self {
             Self::OpenAI => "gpt-4o",
@@ -36,7 +39,7 @@ impl ProviderType {
             Self::Gemini => "gemini-2.0-flash-exp",
             Self::DeepSeek => "deepseek-chat",
             Self::Ollama => "llama3.2",
-            Self::Groq => "llama-3.3-70b-versatile",
+            Self::Groq => "groq::llama-3.3-70b-versatile",
             Self::XAI => "grok-2",
             Self::Cohere => "command-r-plus",
             Self::Custom => "default",
