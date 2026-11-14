@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.15](https://github.com/try-auroraview/auroraview/compare/auroraview-v0.5.14...auroraview-v0.5.15) (2026-11-14)
+
+
+### Features
+
+* retain standalone windows across reopenings ([ba9a54e](https://github.com/try-auroraview/auroraview/commit/ba9a54edff31a6d1622c8c90aa209c50e7ebd9c3))
+
+
+### Bug Fixes
+
+* **ai-agent:** align provider models and reasoning options with genai 0.6 ([68db606](https://github.com/try-auroraview/auroraview/commit/68db6065fb41578c7cb7471f73f6872aa452c7d4))
+* **ai-agent:** cover legacy Groq ids at the request boundary ([5eb48cc](https://github.com/try-auroraview/auroraview/commit/5eb48ccfd50e8408dce282f2e12c8cae01b9fc02))
+* gate retained native helpers to Windows ([816e532](https://github.com/try-auroraview/auroraview/commit/816e532128bf3e27143d76630fe6af630ea447a1))
+* restore retained-window CI compatibility ([7d0f6f9](https://github.com/try-auroraview/auroraview/commit/7d0f6f9125768a31ef83546cab4821cb95be2901))
+* support retained windows on Python 3.7 ([fffbb2c](https://github.com/try-auroraview/auroraview/commit/fffbb2cc74337cc340d55523d0d434adc8baf738))
+
 ## [0.5.14](https://github.com/try-auroraview/auroraview/compare/auroraview-v0.5.13...auroraview-v0.5.14) (2026-11-04)
 
 
