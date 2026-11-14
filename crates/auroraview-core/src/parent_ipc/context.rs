@@ -5,6 +5,7 @@
 //! environment contract.
 
 use std::env;
+use std::num::TryFromIntError;
 
 use super::protocol::{
     ENV_CHILD_ID, ENV_EXAMPLE_NAME, ENV_PARENT_HWND, ENV_PARENT_ID, ENV_PARENT_PORT,
@@ -24,6 +25,7 @@ pub struct ChildInfo {
     /// `AURORAVIEW_PARENT_PORT`, parsed as a TCP port.
     pub parent_port: Option<u16>,
     /// `AURORAVIEW_PARENT_HWND`, parsed as a native window handle.
+    /// Use [`Self::parent_handle`] when passing it to the adapter contract.
     pub parent_hwnd: Option<isize>,
 }
 
@@ -55,6 +57,23 @@ impl ChildInfo {
     pub fn can_connect(&self) -> bool {
         self.is_child && self.parent_port.is_some()
     }
+
+    /// Convert the parent handle to the adapter contract's canonical `u64`.
+    ///
+    /// Use this boundary before assigning the handle to
+    /// [`crate::contract::SurfaceSpec`] or a host adapter. The legacy native
+    /// field stays `isize`; absent handles stay absent and nonnegative values
+    /// (including zero) are preserved. This only checks the representation,
+    /// not whether the handle names a live window.
+    ///
+    /// # Errors
+    ///
+    /// Negative native values cannot be represented by the contract. They are
+    /// rejected rather than reinterpreted as large unsigned handles or silently
+    /// treated as absent. Callers must surface the error before embedding.
+    pub fn parent_handle(&self) -> Result<Option<u64>, TryFromIntError> {
+        self.parent_hwnd.map(u64::try_from).transpose()
+    }
 }
 
 /// `true` when this process was launched as an AuroraView child window.
@@ -68,6 +87,10 @@ pub fn is_child_mode() -> bool {
 ///
 /// Returns `None` for anything that is not a valid integer literal, so callers
 /// can log and continue instead of aborting startup.
+/// Values outside the current platform's `isize` range are rejected, never
+/// truncated. Signed input is retained for compatibility; use
+/// [`ChildInfo::parent_handle`] to reject negative values at the `u64` contract
+/// boundary.
 pub fn parse_hwnd(raw: &str) -> Option<isize> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

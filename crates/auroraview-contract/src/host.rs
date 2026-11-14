@@ -265,6 +265,9 @@ pub trait HostAdapter: Send + Sync {
     ///
     /// Returning `None` is normal: Qt hosts usually need a widget pointer from
     /// the caller rather than a top-level handle.
+    /// The contract representation is `u64`; convert signed native values with
+    /// `u64::try_from` before storing them in the adapter. Reject conversion
+    /// failures rather than silently casting or reporting an absent handle.
     fn parent_handle(&self) -> Option<u64> {
         None
     }

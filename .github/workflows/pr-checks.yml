@@ -724,6 +724,10 @@ jobs:
           key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-coverage-
 
+      # The root-package coverage lane does not select core's integration tests.
+      - name: Check parent-handle contract boundary
+        run: vx just test-parent-handle-contract
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@v2
         with:

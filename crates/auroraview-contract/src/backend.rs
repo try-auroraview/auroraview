@@ -74,6 +74,10 @@ pub struct SurfaceSpec {
     /// Inline HTML to load, if any.
     pub html: Option<String>,
     /// Native parent window handle, when embedding into a host window.
+    ///
+    /// The contract representation is `u64`. Convert signed native values with
+    /// `u64::try_from`; backends requiring `isize` must use `isize::try_from`
+    /// rather than silently narrowing or reinterpreting the value.
     pub parent_handle: Option<u64>,
     /// Request a transparent (per-pixel alpha) surface.
     pub transparent: bool,
