@@ -116,7 +116,7 @@ jobs:
         run: vx just sdk-test-cov
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: packages/auroraview-sdk/coverage/coverage-final.json
           flags: sdk,typescript
